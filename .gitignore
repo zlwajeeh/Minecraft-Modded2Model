@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# exported models and previews (made by the tool, not source)
+exports/
+*.stl
+*.3mf
+*.glb
