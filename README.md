@@ -1,4 +1,4 @@
-# Minecraft-Modded2Model v1.0.1
+# Minecraft-Modded2Model v1.0.2
 
 Export Minecraft builds, modded blocks included, as watertight 3D-printable models.
 Block shapes come from the game's and mods' own model files,

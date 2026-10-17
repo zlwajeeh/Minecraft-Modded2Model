@@ -530,6 +530,19 @@ class TexturedBuilder:
         self.add_mesh(f"{ns}:models/item/{tname}/item.obj", item_model.get("textures", {}),
                       lambda t: t @ tire[:3, :3].T + tire[:3, 3] + shift)
 
+    def _add_moving(self, part, merge):
+        """A contraption at an angle off the grid (contraptions.MovingPart): build its blocks on
+        their own grid, then move and turn the triangles about the anchor's centre."""
+        sub = TexturedBuilder(self.vox, part.structure).build(merge=merge)
+        off = np.array(part.offset, float) * 16  # faces are in 1/16-block units
+        center = np.array(part.center, float) * 16
+        for key, (pos, uv) in sub.groups.items():
+            g = self.faces.groups.setdefault(key, [[], []])
+            for p, u in zip(pos, uv):
+                if len(p):
+                    g[0].append((p + off - center) @ part.matrix.T + center)
+                    g[1].append(u)
+
     def build(self, merge=False):
         """merge: also cull hidden faces (see Faces.cull_hidden); weld when writing."""
         from .progress import report
@@ -544,6 +557,8 @@ class TexturedBuilder:
             if part:  # add_elements turns about the block centre: express x -> m x + t that way
                 c = np.array([8.0, 8, 8])
                 self.add_elements(part["elements"], part["textures"], m, t - c + m @ c, None, None)
+        for moving in getattr(self.structure, "moving", []):
+            self._add_moving(moving, merge)
         if merge:
             from .visibility import see_through
             data = getattr(self.structure, "block_data", None) or {}
