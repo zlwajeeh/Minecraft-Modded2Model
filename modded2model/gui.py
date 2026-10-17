@@ -977,6 +977,16 @@ class App(tk.Tk):
         self.run_bg(lambda: cli_main(args), lambda _: self.write_log(f"Done: {out}\n"), f"Exporting {name}…")
 
 
+def quit_now():
+    """After the window closes: stop background work and end the process, instead of waiting
+    for a block map build or an export to finish (Python would otherwise stay running)."""
+    from . import blocktable
+    try:
+        blocktable.stop()
+    finally:
+        os._exit(0)
+
+
 def main():
     try:  # sharp text on scaled Windows displays instead of a blurry stretched window
         import ctypes
@@ -984,6 +994,7 @@ def main():
     except Exception:
         pass
     App().mainloop()
+    quit_now()
 
 
 if __name__ == "__main__":

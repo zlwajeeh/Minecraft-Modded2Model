@@ -388,6 +388,7 @@ def main():
     except Exception:
         pass
     ClassicApp().mainloop()
+    gui.quit_now()
 
 
 if __name__ == "__main__":

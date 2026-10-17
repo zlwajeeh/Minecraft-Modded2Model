@@ -17,6 +17,8 @@ import re
 import time
 from concurrent.futures import ProcessPoolExecutor
 
+_running = []  # pools building right now, so closing the window can stop them
+
 from .schematic import BlockState
 
 _BLOCKSTATE = re.compile(r"assets/([^/]+)/blockstates/(.+)\.json$")
@@ -73,10 +75,19 @@ def plan(assets):
     return jobs, variants, defaults
 
 
+def _exit_with_parent():
+    import multiprocessing
+    import threading
+    parent = multiprocessing.parent_process()
+    if parent is not None:  # a worker left behind when the window's process ends quits too
+        threading.Thread(target=lambda: (parent.join(), os._exit(0)), daemon=True).start()
+
+
 def _init(asset_paths):
     global _worker
     import contextlib
     import io
+    _exit_with_parent()
     from .assets import Assets
     from .voxelize import Voxelizer
     from .worldmap import BlockColors
@@ -160,6 +171,7 @@ def build(instance, asset_paths, progress=None, workers=None, force=False):
         batches = [todo[i:i + 40] for i in range(0, len(todo), 40)]
         last_save = time.time()
         with ProcessPoolExecutor(max_workers=n, initializer=_init, initargs=(list(asset_paths),)) as ex:
+            _running.append(ex)
             for k, result in enumerate(ex.map(_measure, batches)):
                 done.update(result)
                 if progress:
@@ -168,8 +180,18 @@ def build(instance, asset_paths, progress=None, workers=None, force=False):
                 if time.time() - last_save > 20:  # keep progress if the window is closed
                     save(False)
                     last_save = time.time()
+        _running.remove(ex)
     save(True)
     if progress:
         progress(1.0, f"Block map ready: {len(defaults)} blocks, {len(jobs)} models, "
                       f"in {time.time() - t0:.0f}s")
     return path
+
+
+def stop():
+    """End any block map build at once (its worker processes too); saved progress is kept,
+    and the next build carries on from it."""
+    for ex in list(_running):
+        ex.shutdown(wait=False, cancel_futures=True)
+        for proc in list((getattr(ex, "_processes", None) or {}).values()):
+            proc.terminate()
