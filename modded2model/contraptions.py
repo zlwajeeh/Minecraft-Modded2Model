@@ -41,6 +41,8 @@ class Contraption:
     angle: float  # degrees, as saved
     blocks: list = field(default_factory=list)  # (dx, dy, dz, BlockState) relative to the anchor
     block_data: dict = field(default_factory=dict)  # (dx, dy, dz) -> block entity NBT
+    type: str = ""  # Contraption.Type, e.g. create:bearing, vs_clockwork:propeller, vs_clockwork:flap
+    facing: str = ""  # the bearing's facing (the anchor is the block in front of it)
 
 
 def _signed(v, bits):
@@ -76,7 +78,10 @@ def parse(entity):
         facing = c.get("Facing")
         d = DIRS[FACING_INDEX[facing]] if isinstance(facing, int) and 0 <= facing < 6 else (0, 1, 0)
         axis = "xyz"[[abs(v) for v in d].index(1)]
-    out = Contraption(str(entity.get("id")), _vec(c["Anchor"]), axis, float(entity.get("Angle", 0.0)))
+    facing = c.get("Facing")
+    out = Contraption(str(entity.get("id")), _vec(c["Anchor"]), axis, float(entity.get("Angle", 0.0)),
+                      type=str(c.get("Type", "")),
+                      facing=FACING_INDEX[facing] if isinstance(facing, int) and 0 <= facing < 6 else "")
     for b in blocks.get("BlockList", []):
         i = b.get("State", 0)
         if not 0 <= i < len(palette) or palette[i].name in AIR:
@@ -265,17 +270,24 @@ class MovingPart:
     offset: tuple  # export grid position of the part's (0, 0, 0)
     center: tuple  # export coordinates (blocks) of the turning point
     matrix: np.ndarray
+    axis: str = "y"  # the bearing's axis
+    angle: float = 0.0  # degrees, Create's sign convention (right-handed about +axis)
+    kind: str = ""  # the contraption entity id
+    type: str = ""  # Contraption.Type (flaps swing rather than spin)
+    facing: str = ""  # the bearing's facing
+    rpm: float = None  # rig: the bearing's speed, if its kinetic network is known
 
 
-def attach(structure, contraptions, to_local, mode="world", exact=False):
+def attach(structure, contraptions, to_local, mode="world", exact=False, separate=False):
     """Add contraptions to an export. to_local maps save coordinates to the structure's grid.
     exact: True for GLB, where mode "world" keeps the precise angle as a MovingPart; otherwise
-    every contraption is snapped onto the grid. Grows the structure to fit. Returns notes."""
+    every contraption is snapped onto the grid. separate (GLB rig): every contraption becomes a
+    MovingPart, even on the grid, so it can be its own object. Grows the structure to fit."""
     notes, extra, extra_data, moving = [], [], {}, []
     for c in contraptions:
         angle = angle_for(c, mode)
         off_grid = abs(angle - round(angle / 90) * 90) > 0.01
-        if off_grid and exact:
+        if (off_grid and exact) or separate:
             sub = Structure((1, 1, 1))
             lo = np.min([b[:3] for b in c.blocks], 0)
             sub.blocks = [(x - lo[0], y - lo[1], z - lo[2], st) for x, y, z, st in c.blocks]
@@ -283,7 +295,8 @@ def attach(structure, contraptions, to_local, mode="world", exact=False):
             sub.block_data = {(x - lo[0], y - lo[1], z - lo[2]): d for (x, y, z), d in c.block_data.items()}
             a = to_local(c.anchor)
             moving.append(MovingPart(sub, tuple(int(v) for v in np.add(a, lo)),
-                                     tuple(float(v) + 0.5 for v in a), _rot_matrix(c.axis, angle)))
+                                     tuple(float(v) + 0.5 for v in a), _rot_matrix(c.axis, angle),
+                                     c.axis, angle, c.kind, c.type, c.facing))
             notes.append(f"Moving contraption ({c.kind}, {len(c.blocks)} blocks) at {angle:.1f} degrees")
             continue
         if off_grid:

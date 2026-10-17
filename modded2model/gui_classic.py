@@ -221,6 +221,27 @@ class ClassicApp(gui.App):
         self.merge_cb.grid(row=0, column=0, sticky="w")
         self.glass_var, self.glass_cb = flag(bl, "glass_cull", "One-sided glass (backface culling)", False)
         self.glass_cb.grid(row=1, column=0, sticky="w")
+        self.rig_armature_var, cb = flag(bl, "rig_armature", "Auto-rig for Blender: armature with a bone for every "
+                                                             "moving part (pose and animate the bones)", False)
+        cb.grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(bl, text="Moving parts (separate objects, or bones with the armature), with an in-game-speed "
+                           "animation:").grid(row=6, column=0, sticky="w", pady=(6, 0))
+        old_rig = s.get("rig", False)  # the earlier single option turns both on
+        self.rig_contraptions_var, cb = flag(bl, "rig_contraptions", "Bearings and propellers (moving contraptions)",
+                                             old_rig)
+        cb.grid(row=7, column=0, sticky="w", padx=(16, 0))
+        self.rig_kinetics_var, cb = flag(bl, "rig_kinetics", "Create cogs, shafts, gearboxes and other turning parts",
+                                         old_rig)
+        cb.grid(row=8, column=0, sticky="w", padx=(16, 0))
+        r2 = ttk.Frame(bl)
+        r2.grid(row=9, column=0, sticky="w", pady=(2, 0), padx=(16, 0))
+        ttk.Label(r2, text="Machines saved stopped turn at").pack(side="left")
+        self.rig_rpm = num(r2, "rig_rpm", "32", 5)
+        self.rig_rpm.pack(side="left", padx=4)
+        ttk.Label(r2, text="RPM.   Contraptions with no known speed: one turn every").pack(side="left")
+        self.rig_spin = num(r2, "rig_spin", "0", 5)
+        self.rig_spin.pack(side="left", padx=4)
+        ttk.Label(r2, text="s (0 = still)").pack(side="left")
 
         cl = ttk.Frame(self.opt_tabs, padding=8)
         self.backup_var, cb = flag(cl, "remove_backups", "Remove backup blocks", True)

@@ -253,7 +253,19 @@ def _ct_uvs(uvs, col, row, n):
     return [((col * 16 + u) / n, (row * 16 + v) / n) for u, v in uvs]
 
 
+_HALF_SIDE = {v: k for k, v in codeshapes._HALF_TO.items()}  # half shaft rotation -> side
+
+
+def _whole(node):
+    from .kinetics import whole_block
+    return whole_block(node)
+
+
 class TexturedBuilder:
+    separate_moving = False  # rig: keep contraptions out of the main mesh (see self.parts)
+    rig_kinetics = False  # rig: shafts, cogs and other turning parts as their own objects
+    rig_rpm = 32.0  # speed assumed for a network saved stopped
+
     def __init__(self, vox, structure):
         self.vox = vox
         self.assets = vox.assets
@@ -497,7 +509,8 @@ class TexturedBuilder:
             for mid, rot in codeshapes.kinetic_shafts(st):
                 part = assets.model(mid)
                 if part:
-                    self.add_elements(part["elements"], part["textures"], _blockstate_matrix(*rot), shift, None, tint)
+                    with self._turning(pos, _HALF_SIDE.get(tuple(rot)) if "half" in mid else None):
+                        self.add_elements(part["elements"], part["textures"], _blockstate_matrix(*rot), shift, None, tint)
             for mid, mo, sh in codeshapes.offset_parts(st, resolved[0][2], resolved[0][1]):
                 part = assets.model(mid)
                 if part:
@@ -510,7 +523,8 @@ class TexturedBuilder:
                 part = assets.model(mid)
                 if part:
                     mf = _blockstate_matrix(*rot)
-                    self.add_elements(part["elements"], part["textures"], mf, shift, pos, tint, base_textures)
+                    with self._turning(pos, "frame"):  # crank handles, pump cogs, fan blades
+                        self.add_elements(part["elements"], part["textures"], mf, shift, pos, tint, base_textures)
             if not extra_ids and name not in HANDLERS:
                 self.add_elements(assets.item_extra_elements(name, codeshapes.item_extras_allowed(name)), {}, m, shift, pos, tint, base_textures)
         if name == "offroad:wheel_mount":
@@ -556,13 +570,68 @@ class TexturedBuilder:
                     g[0].append((p + off - center) @ part.matrix.T + center)
                     g[1].append(u)
 
+    def _turning(self, pos, piece):
+        """Rig: draw what follows into this kinetic block's own Faces (piece: a gearbox half's side,
+        "frame" for parts like crank handles, None for the block's single shaft)."""
+        import contextlib
+        node = self.kinetic.get(pos) if self.rig_kinetics else None
+        if node is None:
+            return contextlib.nullcontext()
+        return self._redirect((pos, piece))
+
+    def _redirect(self, key):
+        import contextlib
+
+        @contextlib.contextmanager
+        def ctx():
+            saved = self.faces
+            if key not in self.kinetic_faces:
+                f = Faces()
+                f.block = saved.block
+                self.kinetic_faces[key] = f
+            self.faces = self.kinetic_faces[key]
+            try:
+                yield
+            finally:
+                self.faces = saved
+        return ctx()
+
+    def _kinetic_parts(self):
+        """KineticPart for each turning piece drawn (see kinetics)."""
+        from . import kinetics
+        from .contraptions import _rot_matrix
+        out = []
+        for (pos, piece), f in self.kinetic_faces.items():
+            if not any(len(p) for g in f.groups.values() for p in g[0]):
+                continue
+            node, rpm = self.kinetic[pos]
+            if piece not in (None, "frame", "whole"):
+                rpm = kinetics.half_speed(node, rpm, piece)
+            rest = kinetics.phase(node) if piece in (None, "whole") else 0.0
+            label = node.name + (f" ({piece} half)" if piece not in (None, "frame", "whole") else "")
+            out.append((kinetics.KineticPart((0, 0, 0), tuple(v + 0.5 for v in pos), _rot_matrix(node.axis, rest),
+                                             node.axis, rest, node.name, "kinetic", rpm,
+                                             self.kinetic_network.get(pos, 0), label), f))
+        return out
+
     def build(self, merge=False):
         """merge: also cull hidden faces (see Faces.cull_hidden); weld when writing."""
         from .progress import report
+        self.kinetic, self.kinetic_faces, self.kinetic_network = {}, {}, {}
+        if self.rig_kinetics or self.separate_moving:  # speeds: for turning parts, and for bearings
+            from . import kinetics
+            found, groups = kinetics.networks(self.structure, self.rig_rpm)
+            self.kinetic = found
+            self.kinetic_network = {p: i for i, comp in enumerate(groups) for p in comp}
         n = max(1, len(self.structure.blocks))
         for k, (x, y, z, st) in enumerate(self.structure.blocks):
             report(k / n, f"Building model ({k}/{n} blocks)")
-            self.add_block(x, y, z, st)
+            whole = self.rig_kinetics and (x, y, z) in self.kinetic and _whole(self.kinetic[(x, y, z)][0])
+            if whole:
+                with self._redirect(((x, y, z), "whole")):
+                    self.add_block(x, y, z, st)
+            else:
+                self.add_block(x, y, z, st)
         self.faces.block = None
         self.faces.separate_back_to_back()
         for mid, m, t in codeshapes.structure_parts(self.structure):
@@ -570,8 +639,19 @@ class TexturedBuilder:
             if part:  # add_elements turns about the block centre: express x -> m x + t that way
                 c = np.array([8.0, 8, 8])
                 self.add_elements(part["elements"], part["textures"], m, t - c + m @ c, None, None)
+        self.parts = self._kinetic_parts() if self.rig_kinetics else []  # rig: (part, its own Faces at rest)
+        for moving in getattr(self.structure, "moving", []):  # a contraption turns with its bearing
+            if moving.facing in codeshapes.PIPE_DIRS:
+                d = codeshapes.PIPE_DIRS[moving.facing]
+                bearing = tuple(int(round(c - 0.5)) - v for c, v in zip(moving.center, d))
+                if bearing in self.kinetic:
+                    moving.rpm = self.kinetic[bearing][1]
         for moving in getattr(self.structure, "moving", []):
-            self._add_moving(moving, merge)
+            if self.separate_moving:
+                sub = TexturedBuilder(self.vox, moving.structure).build(merge=merge)
+                self.parts.append((moving, sub))
+            else:
+                self._add_moving(moving, merge)
         if merge:
             from .visibility import see_through
             data = getattr(self.structure, "block_data", None) or {}
@@ -581,14 +661,40 @@ class TexturedBuilder:
         return self.faces
 
 
-def write_glb(path, faces, assets, name="Minecraft-Modded2Model", weld=False, glass_single_sided=False):
+def _groups(faces):
+    return [(k, np.concatenate(v[0]) / 16.0, np.concatenate(v[1])) for k, v in faces.groups.items()
+            if v[0] and sum(len(a) for a in v[0])]
+
+
+def _quat(axis, degrees):
+    """glTF quaternion (x, y, z, w) for a right-handed turn about +axis (Create's convention)."""
+    h = math.radians(degrees) / 2
+    v = {"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}[axis]
+    return [v[0] * math.sin(h), v[1] * math.sin(h), v[2] * math.sin(h), math.cos(h)]
+
+
+def write_glb(path, faces, assets, name="Minecraft-Modded2Model", weld=False, glass_single_sided=False,
+              parts=(), spin_seconds=0.0, armature=False):
     """Write grouped faces as a .glb: one mesh, one primitive per texture.
 
     weld: share vertices that have the same position, UV and normal (indexed triangles), so
-    each surface is one connected piece instead of separate quads."""
-    groups = [(k, np.concatenate(v[0]) / 16.0, np.concatenate(v[1])) for k, v in faces.groups.items()
-              if v[0] and sum(len(a) for a in v[0])]
-    allpos = np.concatenate([g[1] for g in groups])
+    each surface is one connected piece instead of separate quads.
+    parts (rig): [(MovingPart, Faces)] written as their own objects, each with its origin on its
+    bearing's axis (the anchor block's centre) and turned to its saved angle, so rotating the
+    object about that axis turns it like in game; custom properties say the axis and angle.
+    spin_seconds > 0 also adds a looping "Spin" animation: each part turns once per that time.
+    armature: instead of separate objects, one skinned mesh and an armature: a root bone for the
+    static blocks and one bone per part, on its pivot and turned to its rest angle; each part's
+    vertices are fully weighted to its bone, and the animations turn the bones."""
+    groups = _groups(faces)
+    part_groups = []
+    for part, pf in parts:
+        pivot = np.array(part.center, float)  # blocks
+        g = [(k, pos + np.array(part.offset, float) - pivot, uv) for k, pos, uv in _groups(pf)]
+        part_groups.append((part, pivot, g))
+    placed = [g[1] for g in groups] + [(pos @ part.matrix.T) + pivot for part, pivot, gs in part_groups
+                                       for _, pos, _ in gs]
+    allpos = np.concatenate(placed)
     offset = np.array([-(allpos[:, 0].min() + allpos[:, 0].max()) / 2, -allpos[:, 1].min(),
                        -(allpos[:, 2].min() + allpos[:, 2].max()) / 2])  # centred, standing on y=0
 
@@ -607,17 +713,25 @@ def write_glb(path, faces, assets, name="Minecraft-Modded2Model", weld=False, gl
         views.append(v)
         return len(views) - 1
 
-    for (tex, tint), pos, uv in groups:
-        pos = (pos + offset).astype(np.float32)
+    def primitives_for(group_list, shift):
+        out = []
+        for (tex, tint), pos, uv in group_list:
+            out.append(add_primitive(tex, tint, (pos + shift).astype(np.float32), uv))
+        return out
+
+    def add_primitive(tex, tint, pos, uv, joints=None):
         a = np.cross(pos[1::3] - pos[0::3], pos[2::3] - pos[0::3])
         n = np.repeat(a / np.maximum(np.linalg.norm(a, axis=1, keepdims=True), 1e-9), 3, axis=0).astype(np.float32)
         uv = uv.astype(np.float32)
         indices = None
         if weld:
-            key = np.round(np.hstack([pos, uv, n]).astype(np.float64), 5)
+            cols = [pos, uv, n] + ([joints[:, None].astype(np.float64)] if joints is not None else [])
+            key = np.round(np.hstack(cols).astype(np.float64), 5)  # never weld across bones
             uniq, inv = np.unique(key, axis=0, return_inverse=True)
             pos, uv, n = (uniq[:, 0:3].astype(np.float32), uniq[:, 3:5].astype(np.float32),
                           uniq[:, 5:8].astype(np.float32))
+            if joints is not None:
+                joints = np.rint(uniq[:, 8]).astype(np.int64)
             indices = inv.reshape(-1).astype(np.uint32)
         acc_pos = len(accessors)
         accessors.append({"bufferView": add_view(pos.tobytes(), 34962), "componentType": 5126, "count": len(pos),
@@ -650,16 +764,123 @@ def write_glb(path, faces, assets, name="Minecraft-Modded2Model", weld=False, gl
                 "material": len(materials) - 1}
         if acc_idx is not None:
             prim["indices"] = acc_idx
-        primitives.append(prim)
+        if joints is not None:  # one bone per vertex, full weight
+            j = np.zeros((len(joints), 4), np.uint16)
+            j[:, 0] = joints
+            w = np.zeros((len(joints), 4), np.float32)
+            w[:, 0] = 1.0
+            prim["attributes"]["JOINTS_0"] = len(accessors)
+            accessors.append({"bufferView": add_view(j.tobytes(), 34962), "componentType": 5123,
+                              "count": len(j), "type": "VEC4"})
+            prim["attributes"]["WEIGHTS_0"] = len(accessors)
+            accessors.append({"bufferView": add_view(w.tobytes(), 34962), "componentType": 5126,
+                              "count": len(w), "type": "VEC4"})
+        return prim
 
+    rows = []  # (part, pivot, groups, title, extras)
+    for i, (part, pivot, gs) in enumerate(part_groups, 1):
+        if not gs:
+            continue
+        kinetic = part.type == "kinetic"
+        title = (f"{part.label} @ {round(part.rpm, 2):g} rpm" if kinetic
+                 else f"Contraption {i} ({part.kind.split(':')[-1]})")
+        extras = {"m2m_part": "kinetic" if kinetic else "contraption", "m2m_axis": part.axis,
+                  # glTF's y-up becomes Blender's z-up: Minecraft y = Blender Z, z = -Y
+                  "m2m_blender_axis": {"x": "X", "y": "Z", "z": "-Y"}[part.axis],
+                  "m2m_angle_deg": round(part.angle, 3), "m2m_kind": part.kind, "m2m_type": part.type}
+        if getattr(part, "rpm", None) is not None:
+            extras["m2m_rpm"] = round(part.rpm, 4)  # turns 6 * rpm degrees a second about the axis
+            extras["m2m_degrees_per_second"] = round(6 * part.rpm, 4)
+        if kinetic:
+            extras["m2m_network"] = part.network
+        else:
+            extras["m2m_blocks"] = len(part.structure.blocks)
+        rows.append((part, pivot, gs, title, extras))
+    animated = []
+    skins = []
+    if armature and rows:
+        # one skinned mesh: static blocks on the root bone (0), each part on its own bone, all in
+        # their rest pose; bones sit on the pivots, turned to the parts' rest angles
+        merged = {}
+        for k, pos, uv in groups:
+            merged.setdefault(k, []).append((pos + offset, uv, 0))
+        for j, (part, pivot, gs, _, _) in enumerate(rows, 1):
+            for k, pos, uv in gs:
+                merged.setdefault(k, []).append(((pos @ part.matrix.T) + pivot + offset, uv, j))
+        prims = []
+        for (tex, tint), chunks in merged.items():
+            pos = np.concatenate([c[0] for c in chunks]).astype(np.float32)
+            uv = np.concatenate([c[1] for c in chunks])
+            joints = np.concatenate([np.full(len(c[0]), c[2], np.int64) for c in chunks])
+            prims.append(add_primitive(tex, tint, pos, uv, joints))
+        meshes = [{"name": name, "primitives": prims}]
+        nodes = [{"mesh": 0, "skin": 0, "name": name}, {"name": f"{name} rig", "children": []}]
+        ibms = [np.eye(4)]
+        for part, pivot, gs, title, extras in rows:
+            nodes[1]["children"].append(len(nodes))
+            nodes.append({"name": title, "translation": (pivot + offset).tolist(),
+                          "rotation": _quat(part.axis, part.angle), "extras": extras})
+            g = np.eye(4)
+            g[:3, :3] = part.matrix
+            g[:3, 3] = pivot + offset
+            ibms.append(np.linalg.inv(g))
+            if "flap" not in part.type:
+                animated.append((len(nodes) - 1, part))
+        ibm = np.array([m.T.reshape(-1) for m in ibms], np.float32)  # glTF matrices are column-major
+        accessors.append({"bufferView": add_view(ibm.tobytes()), "componentType": 5126, "count": len(ibms),
+                          "type": "MAT4"})
+        skins = [{"name": f"{name} rig", "joints": list(range(1, len(nodes))), "skeleton": 1,
+                  "inverseBindMatrices": len(accessors) - 1}]
+        scene_nodes = [0, 1]
+    else:
+        primitives = primitives_for(groups, offset)
+        meshes = [{"name": name, "primitives": primitives}] if primitives else []
+        nodes = [{"mesh": 0, "name": name}] if primitives else [{"name": name}]  # everything may be a rig part
+        for i, (part, pivot, gs, title, extras) in enumerate(rows, 1):
+            meshes.append({"name": f"{name}_part_{i}", "primitives": primitives_for(gs, np.zeros(3))})
+            nodes.append({"mesh": len(meshes) - 1, "name": title, "translation": (pivot + offset).tolist(),
+                          "rotation": _quat(part.axis, part.angle), "extras": extras})
+            if "flap" not in part.type:  # flaps and rudders swing; everything else spins
+                animated.append((len(nodes) - 1, part))
+        scene_nodes = list(range(len(nodes)))
     gltf = {"asset": {"version": "2.0", "generator": "Minecraft-Modded2Model"},
-            "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0, "name": name}],
-            "meshes": [{"name": name, "primitives": primitives}],
+            "scene": 0, "scenes": [{"nodes": scene_nodes}], "nodes": nodes,
+            "meshes": meshes,
             "materials": materials, "accessors": accessors, "bufferViews": views,
             "samplers": [{"magFilter": 9728, "minFilter": 9728, "wrapS": 10497, "wrapT": 10497}],
             "buffers": [{"byteLength": 0}]}
     if images:
         gltf["images"], gltf["textures"] = images, textures_out
+    if skins:
+        gltf["skins"] = skins
+
+    def turning(name_, items, seconds, degrees_per_second):
+        """An animation turning each node at its own rate for `seconds` (keyed every <= 45
+        degrees so the interpolation can't take a shortcut)."""
+        samplers, channels = [], []
+        for node, part in items:
+            total = degrees_per_second(part) * seconds
+            steps = max(8, int(math.ceil(abs(total) / 45.0)))
+            times = np.linspace(0, seconds, steps + 1).astype(np.float32)
+            accessors.append({"bufferView": add_view(times.tobytes()), "componentType": 5126, "count": len(times),
+                              "type": "SCALAR", "min": [0.0], "max": [float(seconds)]})
+            q = np.array([_quat(part.axis, part.angle + total * k / steps) for k in range(steps + 1)], np.float32)
+            accessors.append({"bufferView": add_view(q.tobytes()), "componentType": 5126, "count": len(q), "type": "VEC4"})
+            samplers.append({"input": len(accessors) - 2, "output": len(accessors) - 1, "interpolation": "LINEAR"})
+            channels.append({"sampler": len(samplers) - 1, "target": {"node": node, "path": "rotation"}})
+        return {"name": name_, "samplers": samplers, "channels": channels}
+
+    anims = []
+    timed = [(n, p) for n, p in animated if getattr(p, "rpm", None)]
+    if timed:  # in-game speeds: one loop where every part makes whole turns
+        from .kinetics import loop_seconds
+        seconds = loop_seconds([p.rpm for _, p in timed]) or 4.0
+        anims.append(turning("Kinetics", timed, seconds, lambda p: 6.0 * p.rpm))
+    spun = [(n, p) for n, p in animated if p.type != "kinetic" and not getattr(p, "rpm", None)]
+    if spin_seconds > 0 and spun:  # contraptions without a known speed: one turn per spin_seconds
+        anims.append(turning("Spin", spun, spin_seconds, lambda p: 360.0 / spin_seconds))
+    if anims:
+        gltf["animations"] = anims
     binary = b"".join(bin_parts)
     binary += b"\0" * ((-len(binary)) % 4)
     gltf["buffers"][0]["byteLength"] = len(binary)
@@ -669,4 +890,4 @@ def write_glb(path, faces, assets, name="Minecraft-Modded2Model", weld=False, gl
         f.write(struct.pack("<III", 0x46546C67, 2, 12 + 8 + len(js) + 8 + len(binary)))
         f.write(struct.pack("<II", len(js), 0x4E4F534A) + js)
         f.write(struct.pack("<II", len(binary), 0x004E4942) + binary)
-    return sum(len(g[1]) for g in groups) // 3, len(images)  # triangles before welding (same after)
+    return sum(len(g[1]) for g in groups + [x for _, _, gs in part_groups for x in gs]) // 3, len(images)
