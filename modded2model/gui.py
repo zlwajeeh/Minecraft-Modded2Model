@@ -914,6 +914,23 @@ class App(tk.Tk):
         if glb:
             args += [flag for var, flag in ((self.merge_var, "--merge"), (self.glass_var, "--glass-backface-cull"))
                      if var.get()]
+            rig_c = getattr(self, "rig_contraptions_var", None)  # the classic window's rig options
+            rig_k = getattr(self, "rig_kinetics_var", None)
+            if rig_c is not None and rig_c.get():
+                args.append("--rig-contraptions")
+            if rig_k is not None and rig_k.get():
+                args.append("--rig-kinetics")
+            rig_a = getattr(self, "rig_armature_var", None)
+            if rig_a is not None and rig_a.get():
+                args.append("--rig-armature")  # with neither part kind ticked, both get bones
+                self.settings["rig_armature"] = True
+            elif rig_a is not None:
+                self.settings["rig_armature"] = False
+            if any(v is not None and v.get() for v in (rig_c, rig_k, rig_a)):
+                args += ["--rig-spin", o.get("rig_spin", "0") or "0", "--rig-rpm", o.get("rig_rpm", "32") or "32"]
+            if rig_c is not None:
+                self.settings.update(rig_contraptions=rig_c.get(), rig_kinetics=rig_k.get())
+                self.settings.pop("rig", None)
         else:
             args += ["--interior", {"Keep": "keep", "Remove (hollow)": "hollow",
                                     "Make solid blocks": "solid"}[self.interior_var.get()]]

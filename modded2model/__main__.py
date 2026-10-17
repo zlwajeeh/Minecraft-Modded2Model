@@ -31,6 +31,22 @@ def main(argv=None):
     p.add_argument("--to", dest="corner2", nargs=3, type=int, metavar=("X", "Y", "Z"), help="opposite region corner")
     p.add_argument("--list-ships", action="store_true", help="list Create Aeronautics (Sable) ships in --world and exit")
     p.add_argument("--ship", help="export a Sable ship by id from --list-ships")
+    p.add_argument("--rig-contraptions", action="store_true",
+                   help="GLB rig: moving contraptions (bearings, propellers, windmills) become their own objects, "
+                        "with their origin on the bearing's axis, turned to their saved angle")
+    p.add_argument("--rig-kinetics", action="store_true",
+                   help="GLB rig: Create's turning parts (shafts, cogs, gearbox and encased shafts, crank handles, "
+                        "fan blades...) become their own objects turning at in-game speeds")
+    p.add_argument("--rig", action="store_true", help="both --rig-contraptions and --rig-kinetics")
+    p.add_argument("--rig-armature", action="store_true",
+                   help="GLB: rig with a Blender armature: one skinned mesh, a bone for each moving contraption "
+                        "and turning part (both kinds unless one of the --rig options picks), animated on the bones")
+    p.add_argument("--rig-spin", type=float, default=0.0, metavar="SECONDS",
+                   help="with --rig: contraptions whose bearing speed isn't known get a looping 'Spin' "
+                        "animation, turning once per SECONDS")
+    p.add_argument("--rig-rpm", type=float, default=32.0, metavar="RPM",
+                   help="with --rig: speed for kinetic networks that were saved stopped (default 32); "
+                        "networks saved running keep their own speeds")
     p.add_argument("--contraptions", choices=("world", "snap", "assembled", "none"), default="world",
                    help="moving Create contraptions (bearings, propellers, windmills): 'world' = at their "
                         "saved angle (exact in GLB, nearest quarter turn in prints), 'snap' = nearest quarter "
@@ -124,6 +140,8 @@ def main(argv=None):
         if a.schematic:
             a.schematic = instance.find_schematic(a.instance, a.schematic)
         a.assets += instance.asset_paths(a.instance)
+    if a.rig or (a.rig_armature and not (a.rig_contraptions or a.rig_kinetics)):
+        a.rig_contraptions = a.rig_kinetics = True
     if a.list_ships:
         if not a.world:
             p.error("--list-ships needs --world")
@@ -201,7 +219,8 @@ def main(argv=None):
     if moving and a.contraptions != "none":
         from .contraptions import attach
         found, to_local = moving
-        for line in attach(structure, found, to_local, a.contraptions, exact=a.output.lower().endswith(".glb")):
+        glb = a.output.lower().endswith(".glb")
+        for line in attach(structure, found, to_local, a.contraptions, exact=glb, separate=glb and a.rig_contraptions):
             print(line)
     if not structure.blocks:
         p.error("nothing left to export")
@@ -216,6 +235,8 @@ def main(argv=None):
     if a.output.lower().endswith(".glb"):
         from .blender import TexturedBuilder, write_glb
         builder = TexturedBuilder(vox, structure)
+        builder.separate_moving, builder.rig_kinetics = a.rig_contraptions, a.rig_kinetics
+        builder.rig_rpm = a.rig_rpm
         with stage(0.45, 0.85, "Building model"):
             faces = builder.build(merge=a.merge)
         if a.cull_interior:
@@ -229,7 +250,16 @@ def main(argv=None):
             print(f"Removed {n} faces hidden inside (interior fill: "
                   f"{int(interior.filled_air.sum())} enclosed air blocks filled, {len(fill)} fill faces where they show)")
         tris, images = write_glb(a.output, faces, vox.assets, os.path.splitext(os.path.basename(a.output))[0],
-                                 weld=a.merge, glass_single_sided=a.glass_backface_cull)
+                                 weld=a.merge, glass_single_sided=a.glass_backface_cull,
+                                 parts=builder.parts if a.rig_contraptions or a.rig_kinetics else (),
+                                 spin_seconds=a.rig_spin, armature=a.rig_armature)
+        if a.rig_contraptions or a.rig_kinetics:
+            kin = [p for p, _ in builder.parts if p.type == "kinetic"]
+            con = [p for p, _ in builder.parts if p.type != "kinetic"]
+            print(("Rigged with an armature (bones): " if a.rig_armature else "Rigged: ")
+                  + f"{len(kin)} turning kinetic part(s) in {len({p.network for p in kin})} network(s), "
+                  f"{len(con)} contraption(s); animations: 'Kinetics' (in-game speeds)"
+                  + (f", 'Spin' ({a.rig_spin:g} s a turn)" if a.rig_spin > 0 else ""))
         extra = f", merged (culled {builder.culled} hidden faces, welded vertices)" if a.merge else ""
         print(f"Wrote {a.output} for Blender: {tris} triangles, {images} textures, "
               f"{len(faces.groups)} materials, 1 block = 1 m{extra}, in {time.time() - t0:.1f}s")

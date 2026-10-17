@@ -1,4 +1,4 @@
-# Minecraft-Modded2Model v1.0.3
+# Minecraft-Modded2Model v1.0.4
 
 Export Minecraft builds, modded blocks included, as watertight 3D-printable models.
 Block shapes come from the game's and mods' own model files,
@@ -187,6 +187,37 @@ their bearing (`modded2model/contraptions.py`). `--contraptions` (window: Clean-
 - `snap`: the nearest quarter turn, so every block stays on the grid.
 - `assembled`: as built (angle 0).
 - `none`: leave them out.
+
+## Rigging for animation (Blender)
+
+Two separate options (window: Blender tab, "Rig for animation") split a GLB into objects that
+can move; `--rig` turns on both:
+
+1. **Contraptions** (`--rig-contraptions`, "Bearings and propellers"): on bearings, propeller
+   bearings and windmills, each is its own object with its origin on the bearing's axis (the
+   anchor block's centre), turned to its saved angle. It turns at its bearing's speed.
+2. **Kinetic parts** (`--rig-kinetics`, "Create cogs, shafts, gearboxes..."): shafts, cogs and
+   large cogs, the shafts drawn on gearboxes, encased shafts
+   and chain drives (each gearbox half on its own), crank handles, pump cogs and fan blades. Each
+   turns about its own block centre (`modded2model/kinetics.py`).
+
+Speeds follow Create's own rules (RotationPropagator): shafts end to end turn together, small cogs
+side by side turn opposite ways, a large cog turns half as fast as a small cog it meshes with, and
+gearboxes (including Create Connected's parallel and six-way gearboxes) turn their sides as in
+game. A build saved while running keeps its saved speeds; a network saved stopped turns at
+`--rig-rpm` (default 32 RPM) from its source. Contraptions turn with their bearing.
+
+The GLB carries a looping **Kinetics** animation at those speeds (6 × RPM degrees a second;
+the loop is as long as it takes every part to make whole turns), and each object has custom
+properties in Blender: `m2m_axis` / `m2m_blender_axis`, `m2m_rpm`, `m2m_degrees_per_second`,
+`m2m_network`. Contraptions with no known speed can get a **Spin** animation (`--rig-spin S`,
+one turn every S seconds); Clockwork flaps don't spin.
+
+**Armature** (`--rig-armature`, window: "Auto-rig for Blender"): instead of separate objects, the
+GLB comes in as one mesh skinned to an armature. It has a root bone for the still blocks and one
+bone per moving part, sitting on that part's pivot, with every vertex fully weighted to its part's
+bone. The animations turn the bones, and you can pose them by hand. The bones carry the same
+`m2m_` properties. The two toggles above choose which parts get bones; with neither ticked, both do.
 
 ## Known issues (not fixed yet)
 
