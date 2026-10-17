@@ -542,6 +542,72 @@ _ENGINE_UPGRADES = {
 }
 
 
+def _clockwork_blades(state, data):
+    """VS Clockwork propeller blades on a blade controller (BladeControllerRenderer.renderShared /
+    renderBlade, Clockwork 0.5). Blade i (an item in "Blades") is turned to slot i * 360 / count
+    about the controller's axis, pitched by "BladeAngle" about the block's z axis, and built from a
+    base, an extension stretched to "BladeLength" and a tip. Per part, applied last-to-first:
+      facing:  rotateCentered(horizontalAngle(facing.opposite), up)  (horizontal facings)
+               rotateCentered(-90 - verticalAngle(facing), east)
+      slot:    rotateCentered(i * 360 / count, up)
+      pitch:   rotate about z by BladeAngle through the block centre
+      part:    base: z - 0.3;  extension: z * L, then z + (L - 1) * 0.3 - 0.3;  tip: z + (L-1)*0.5 + 1 - L - 0.3
+    Returns (model id, matrix, shift) in this module's data_parts form."""
+    import math
+    import numpy as np
+    data = data or {}
+    items = [b for b in (data.get("Blades") or {}).get("Items", []) if b.get("id")]
+    if not items:
+        return []
+    facing = state.properties.get("facing", "north")
+    pitch = float(data.get("BladeAngle", 0.0))
+    step = 360.0 / len(items)
+
+    def rot(axis, deg):
+        t = math.radians(deg)
+        c, s = math.cos(t), math.sin(t)
+        r = {"x": [[1, 0, 0], [0, c, -s], [0, s, c]], "y": [[c, 0, s], [0, 1, 0], [-s, 0, c]],
+             "z": [[c, -s, 0], [s, c, 0], [0, 0, 1]]}[axis]
+        m = np.eye(4)
+        m[:3, :3] = r
+        return m
+
+    def tr(x, y, z):
+        m = np.eye(4)
+        m[:3, 3] = (x, y, z)
+        return m
+
+    def centered(axis, deg):
+        return tr(.5, .5, .5) @ rot(axis, deg) @ tr(-.5, -.5, -.5)
+    opposite = {"north": "south", "south": "north", "east": "west", "west": "east", "up": "down", "down": "up"}
+    y_rot = {"south": 0, "west": 90, "north": 180, "east": 270}  # Direction.toYRot
+    head = np.eye(4)
+    if facing not in ("up", "down"):
+        o = opposite[facing]
+        h = -y_rot[o] if o in ("east", "west") else y_rot[o]  # AngleHelper.horizontalAngle
+        head = head @ centered("y", h)
+    vertical = {"up": -90, "down": 90}.get(facing, 0)  # AngleHelper.verticalAngle
+    head = head @ centered("x", -90 - vertical)
+    out = []
+    for i, item in enumerate(items):
+        length = float((item.get("tag") or {}).get("BladeLength", 1.0))
+        wide = "wide" in str(item.get("id"))
+        name = "wideblade" if wide else "blade"
+        m = head @ centered("y", i * step) @ centered("z", pitch)
+        scale = np.eye(4)
+        scale[2, 2] = length
+        parts = {f"{name}_base": tr(0, 0, -0.3),
+                 f"{name}_extension": tr(0, 0, (length - 1) * 0.3) @ scale @ tr(0, 0, -0.3),
+                 f"{name}_tip": tr(0, 0, (length - 1) * 0.5 + 1 - length - 0.3)}
+        for part, local in parts.items():
+            a = m @ local  # block units, origin at the block corner
+            lin = a[:3, :3]
+            c = np.full(3, 8.0)
+            shift = 16 * a[:3, 3] + lin @ c - c  # data_parts turn about the block centre (1/16 units)
+            out.append((f"vs_clockwork:block/blade_controller/blade/{part}", lin, shift))
+    return out
+
+
 def _headlamps(state, data):
     """Bits 'n' Bobs headlamps (HeadlampBlockEntityRenderer / HeadlampModelBuilder): up to nine
     lamps on one block in a 3x3 grid. headlampPlacements[i] is 0 for an empty slot, else a lamp
@@ -667,6 +733,8 @@ def data_parts(state, data):
         return _headlamps(state, data)
     if state.name == "create:belt":
         return _belt(state)
+    if state.name == "vs_clockwork:blade_controller":
+        return _clockwork_blades(state, data)
     if state.name not in _ENGINE_UPGRADES["silencer"]:
         return []
     p = state.properties
