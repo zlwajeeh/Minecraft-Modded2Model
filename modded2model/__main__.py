@@ -132,6 +132,8 @@ def main(argv=None):
             x, y, z = ship.position
             print(f"{ship.id:16} {s.size[0]}x{s.size[1]}x{s.size[2]} blocks, {len(s.blocks):5} non-air, "
                   f"at {x:.0f} {y:.0f} {z:.0f}")
+            if ship.name:
+                print(f"{'':16} name: {ship.name}")
         return 0
     if not a.assets:
         p.error("give --instance or -a asset sources")
@@ -153,7 +155,7 @@ def main(argv=None):
         if not match:
             p.error(f"no ship {a.ship}; see --list-ships")
         structure = match[0].structure()
-        default_name = "ship_" + a.ship.replace(":", "_").replace(".", "_")
+        default_name = "ship_" + (_safe_name(match[0].name) or a.ship.replace(":", "_").replace(".", "_"))
         moving = _ship_contraptions(a, match[0], structure)
     elif a.world:
         if not (a.corner1 and a.corner2):
@@ -169,7 +171,9 @@ def main(argv=None):
             for i, sl in enumerate(structure.sub_levels):
                 mark = ("  <- exporting" if sl is structure else "  <- merged onto the grid" if i in structure.merged
                         else "  <- rotated, left out (use --sub-level)" if i in structure.skipped else "")
-                print(f"  {i}: {sl.size[0]}x{sl.size[1]}x{sl.size[2]} blocks, {len(sl.blocks)} non-air{mark}")
+                named = sable.structure_name(sl)
+                print(f"  {i}: {sl.size[0]}x{sl.size[1]}x{sl.size[2]} blocks, {len(sl.blocks)} non-air"
+                      + (f', "{named}"' if named else "") + mark)
         default_name = os.path.splitext(os.path.basename(a.schematic))[0]
     else:
         p.error("give a schematic, or --world with --from/--to or --ship")
@@ -261,6 +265,12 @@ def write_print(path, verts, tris):
         mesh.write_3mf(path, verts, tris)
     else:
         mesh.write_stl(path, verts, tris)
+
+
+def _safe_name(text):
+    """A ship name as a file name part ("" if empty)."""
+    import re
+    return re.sub(r"[^A-Za-z0-9]+", "_", text or "").strip("_")
 
 
 def _region_contraptions(a):

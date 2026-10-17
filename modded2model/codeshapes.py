@@ -310,13 +310,18 @@ PIPE_LIKE = ("create:fluid_pipe", "create:glass_fluid_pipe", "create:encased_flu
 FLUID_HOLDERS = ("tank", "engine", "basin", "spout", "drain", "boiler", "barrel", "pump", "ballast",
                  "electrolyzer", "generator", "hatch", "fluid_interface", "tap", "steam", "boiler")
 ATTACHMENT_PARTS = {"CONNECTION": ("connection",), "DETAILED_CONNECTION": ("rim_connector",),
-                    "RIM": ("rim_connector", "rim"), "DRAIN": ("rim_connector", "drain"), "NONE": ()}
+                    "RIM": ("rim_connector", "rim"), "PARTIAL_RIM": ("rim",), "DRAIN": ("rim_connector", "drain"),
+                    "PARTIAL_DRAIN": ("drain",), "NONE": ()}
 
 
 _SIDE_AXIS = {"north": "z", "south": "z", "east": "x", "west": "x", "up": "y", "down": "y"}
-# Blocks with PipeAttachmentModel: their open ends get connection pieces like a pipe's (the
-# valve's and pump's own models already have their end flanges)
-ATTACHMENT_BLOCKS = ("create:fluid_pipe", "create:glass_fluid_pipe", "create:smart_fluid_pipe")
+# Blocks with PipeAttachmentModel: their open ends get rims, drains and connection pieces
+ATTACHMENT_BLOCKS = ("create:fluid_pipe", "create:encased_fluid_pipe", "create:glass_fluid_pipe",
+                     "create:smart_fluid_pipe", "create:fluid_valve")
+# StraightPipeFluidTransportBehaviour (and the valve's and smart pipe's behaviours built on it)
+STRAIGHT_PIPES = ("create:glass_fluid_pipe", "create:smart_fluid_pipe", "create:fluid_valve")
+# blocks with a FluidTransportBehaviour (pipes, pumps, valves)
+_TRANSPORT = PIPE_LIKE + ("create:mechanical_pump",)
 
 
 def _pipe_open(state, side):
@@ -337,44 +342,90 @@ def _pipe_open(state, side):
     return False
 
 
+def _pipe_axis(state):
+    """IAxisPipe.getAxisOf: the axis of a straight pipe (glass pipe, valve, smart pipe), else None."""
+    p = state.properties
+    if state.name == "create:glass_fluid_pipe":
+        return p.get("axis", "y")
+    if state.name in ("create:fluid_valve", "create:smart_fluid_pipe"):
+        return next((a for a in "xyz" if _pipe_open(state, {"x": "east", "y": "up", "z": "south"}[a])), None)
+    return None
+
+
+def _base_attachment(state, side, n):
+    """FluidTransportBehaviour.getRenderedRimAttachment (Create 6)."""
+    if not _pipe_open(state, side):
+        return "NONE"
+    if n is not None and "pump" in n.name and n.properties.get("facing") == _OPP[side]:
+        return "NONE"
+    if n is not None and n.name == "create:encased_fluid_pipe" and _pipe_open(n, _OPP[side]):
+        return "RIM"
+    if n is not None and n.name not in _TRANSPORT and any(k in n.name for k in FLUID_HOLDERS) \
+            and "hose_pulley" not in n.name:  # FluidPropagator.hasFluidCapability
+        return "DRAIN"
+    return "RIM"
+
+
+def _standard_attachment(state, side, n, straight):
+    """FluidPipeBlockEntity.StandardPipeFluidTransportBehaviour (fluid pipes, encased pipes)."""
+    kind = _base_attachment(state, side, n)
+    if state.name == "create:encased_fluid_pipe" and kind != "DRAIN":
+        return "NONE"  # the casing covers the joints
+    if kind == "RIM":
+        if n is not None and n.name not in ("create:fluid_pipe", "create:encased_fluid_pipe",
+                                             "create:glass_fluid_pipe") \
+                and n.name in _TRANSPORT and _pipe_open(n, _OPP[side]):
+            return "DETAILED_CONNECTION"  # pumps, valves, smart pipes joined to this side
+        # FluidPipeBlock.shouldDrawRim: only another fluid pipe joined back to this side has no rim
+        draw_rim = n is None or n.name != "create:fluid_pipe" or not _pipe_open(n, _OPP[side])
+        if not draw_rim:
+            return "CONNECTION" if straight == _SIDE_AXIS[side] else "DETAILED_CONNECTION"
+        return "RIM"
+    if kind == "NONE" and _pipe_open(state, side):
+        return "DETAILED_CONNECTION"
+    return kind
+
+
+def _straight_attachment(state, side, n):
+    """StraightPipeBlockEntity.StraightPipeFluidTransportBehaviour (glass pipes, valves, smart pipes)."""
+    kind = _base_attachment(state, side, n)
+    if kind == "RIM" and state.name == "create:fluid_valve":
+        return "NONE"
+    if kind == "RIM" and state.name != "create:glass_fluid_pipe" and n is not None \
+            and n.name == "create:glass_fluid_pipe":
+        return "PARTIAL_RIM"
+    if kind == "RIM" and n is not None and n.name == "create:fluid_pipe":
+        return "NONE"
+    own, other = _pipe_axis(state), (_pipe_axis(n) if n is not None else None)
+    if own is not None and own == other:
+        return "NONE"
+    if n is not None and n.name == "create:fluid_valve" and _pipe_axis(n) == _SIDE_AXIS[side]:
+        return "NONE"
+    return {"RIM": "PARTIAL_RIM", "DRAIN": "PARTIAL_DRAIN"}.get(kind, "NONE")  # withoutConnector
+
+
+def should_draw_casing(open_sides):
+    """FluidPipeBlock.shouldDrawCasing: a pipe junction (more than two openings around one axis,
+    e.g. a T or a cross) gets the bulky casing cube (PipeAttachmentModel adds FLUID_PIPE_CASING)."""
+    return any(sum(1 for d in open_sides if _SIDE_AXIS[d] != axis) > 2 for axis in "xyz")
+
+
 def pipe_attachments(state, neighbour):
-    """Side parts of a Create fluid pipe (and the other PipeAttachmentModel blocks).
-    neighbour(side) -> BlockState or None."""
+    """Side parts of a Create fluid pipe and the other PipeAttachmentModel blocks, following
+    Create 6's rendered rim attachments. neighbour(side) -> BlockState or None."""
     if state.name not in ATTACHMENT_BLOCKS:
         return []
-    standard = state.name == "create:fluid_pipe"  # StandardPipeFluidTransportBehaviour override
     on = [d for d in PIPE_DIRS if _pipe_open(state, d)]
-    straight = None
-    if len(on) == 2 and _OPP[on[0]] == on[1]:
-        straight = _SIDE_AXIS[on[0]]
+    straight = _SIDE_AXIS[on[0]] if len(on) == 2 and _OPP[on[0]] == on[1] else None
     out = []
+    if state.name == "create:fluid_pipe" and should_draw_casing(on):
+        out.append("create:block/fluid_pipe/casing")
     for side in PIPE_DIRS:
         n = neighbour(side)
-        connected = side in on
-        # base type (FluidTransportBehaviour)
-        if not connected:
-            base = "NONE"
-        elif n is not None and "pump" in n.name and n.properties.get("facing") == _OPP[side]:
-            base = "NONE"
-        elif n is not None and n.name == "create:encased_fluid_pipe" and _pipe_open(n, _OPP[side]):
-            base = "RIM"
-        elif n is not None and n.name not in PIPE_LIKE and any(k in n.name for k in FLUID_HOLDERS)                 and "hose_pulley" not in n.name:
-            base = "DRAIN"
+        if state.name in STRAIGHT_PIPES:
+            kind = _straight_attachment(state, side, n)
         else:
-            base = "RIM"
-        # standard pipe override
-        kind = base
-        if not standard:
-            pass
-        elif n is not None and n.name == "create:encased_fluid_pipe" and base != "DRAIN":
-            kind = "NONE"
-        elif base == "RIM":
-            neighbour_is_pipe = n is not None and n.name in PIPE_LIKE
-            if neighbour_is_pipe and _pipe_open(n, _OPP[side]):  # no rim between joined pipes
-                axis = {"north": "z", "south": "z", "east": "x", "west": "x", "up": "y", "down": "y"}[side]
-                kind = "CONNECTION" if straight == axis else "DETAILED_CONNECTION"
-        elif base == "NONE" and connected:
-            kind = "DETAILED_CONNECTION"
+            kind = _standard_attachment(state, side, n, straight)
         out += [f"create:block/fluid_pipe/{part}/{side}" for part in ATTACHMENT_PARTS[kind]]
     return out
 
