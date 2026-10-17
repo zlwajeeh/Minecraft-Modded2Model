@@ -416,6 +416,17 @@ class TexturedBuilder:
             self.faces.add_tris(texs.get(face), None, tri + shift, np.column_stack(uv) / 16.0)
 
     # --- blocks ---------------------------------------------------------------------
+    def _nameplate_text(self, st, data, shift):
+        """The name written on an Aeronautics nameplate row (textrender.nameplate_text): glyph
+        quads in the game's font, seen from the front; a back copy keeps them visible in viewers
+        that cull back faces."""
+        from .textrender import nameplate_text
+        for tex, tint, corners, uvs in nameplate_text(st, data, self.assets):
+            c = corners * 16 + shift
+            self.faces.add_quad(tex, tint, c, uvs, cullable=False, overlay=True)
+            self.faces.add_quad(tex, tint, c[[1, 0, 3, 2]], [uvs[1], uvs[0], uvs[3], uvs[2]],
+                                cullable=False, overlay=True)
+
     def add_block(self, x, y, z, st):
         pos = (x, y, z)
         self.faces.block = pos
@@ -423,6 +434,8 @@ class TexturedBuilder:
         assets, name = self.assets, st.name
         tint = FOLIAGE if "leaves" in name else GRASS if any(k in name for k in ("grass", "fern", "vine")) else None
         data = self.structure.block_data.get(pos)
+        if name.endswith("_nameplate") or name.endswith(":nameplate"):  # simulated:<dye>_nameplate
+            self._nameplate_text(st, data, shift)
         material = None
         if name in codeshapes.ALIASES:
             if "copycat" in name:  # copycat stairs/doors/trapdoors: borrowed shape, copied block's texture

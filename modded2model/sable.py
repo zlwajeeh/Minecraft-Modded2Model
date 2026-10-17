@@ -34,6 +34,15 @@ class Ship:
         self.position = tuple(pos.get(k, 0.0) for k in "xyz")
         self.uuid = "-".join(f"{v & 0xFFFFFFFF:08x}" for v in data.get("uuid", []))
 
+    @property
+    def name(self):
+        """The ship's name: Sable's display name if set, else the text on its nameplates ("" if none)."""
+        shown = _plain(self.data.get("display_name"))
+        if shown:
+            return shown
+        plates = (be for chunk in self.data["plot"]["chunks"].values() for be in chunk.get("block_entities", []))
+        return " / ".join(nameplate_names(plates))
+
     def sections(self):
         for key, chunk in self.data["plot"]["chunks"].items():
             packed = int(key)
@@ -75,6 +84,40 @@ class Ship:
                     by = be["y"] + SECTION_Y_OFFSET
                     s.block_data[(bx - int(lo[0]), by - int(lo[1]), bz - int(lo[2]))] = be
         return s
+
+
+def _plain(text):
+    """Nameplate / display text as plain text (it may be a JSON text component)."""
+    import json
+    s = str(text or "").strip()
+    if s[:1] in "{[\"":
+        try:
+            v = json.loads(s)
+        except ValueError:
+            return s
+        if isinstance(v, str):
+            return v.strip()
+        parts = v if isinstance(v, list) else [v]
+        return "".join(str(p.get("text", "")) + "".join(str(e.get("text", "")) for e in p.get("extra", []) if isinstance(e, dict))
+                       if isinstance(p, dict) else str(p) for p in parts).strip()
+    return s
+
+
+def nameplate_names(block_entities):
+    """Text on Aeronautics nameplates (simulated:nameplate), read from each row's controller plate
+    (the one without a ControllerPos). Distinct names, in order found."""
+    out = []
+    for be in block_entities:
+        if isinstance(be, dict) and str(be.get("id", "")).endswith(":nameplate") and "ControllerPos" not in be:
+            name = _plain(be.get("Name"))
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
+def structure_name(structure):
+    """A ship's name from the nameplates among its blocks ("" if it has none)."""
+    return " / ".join(nameplate_names((structure.block_data or {}).values()))
 
 
 def ships(world):

@@ -189,7 +189,7 @@ class App(tk.Tk):
         ttk.Label(r, text="radius").pack(side="left", padx=(8, 4))
         self.radius_var = tk.StringVar(value="16")
         ttk.Entry(r, textvariable=self.radius_var, width=5).pack(side="left")
-        ttk.Button(r, text="Preview", command=self.refresh_preview).pack(side="right")
+        ttk.Button(r, text="Preview", command=self.preview_now).pack(side="right")
         ttk.Label(reg, text="Pick on map: drag a box on a top-down map of the world. In game, F3 shows block "
                             "coordinates.", style="Hint.TLabel", wraplength=520).pack(anchor="w")
 
@@ -526,10 +526,24 @@ class App(tk.Tk):
             self._vox_instance = inst
         return self._vox
 
-    def refresh_preview(self):
-        """Render what Export would export, in the background; only the newest request is shown."""
+    def preview_now(self):
+        """The Preview button: render now, on any tab (the World region tab renders only this way)."""
+        self.refresh_preview(force=True)
+
+    def refresh_preview(self, force=False):
+        """Render what Export would export, in the background; only the newest request is shown.
+        On the World region tab nothing renders until Preview is pressed (force=True): regions can
+        be large, and picking or typing coordinates shouldn't start a render each time."""
         self._preview_token += 1
         token = self._preview_token
+        if not force and self.tabs.index(self.tabs.select()) == 1:
+            self._preview_img, self._fit_key = None, None
+            self.preview_label.configure(image="", text="Press Preview to render this area.")
+            self.preview_label.image = None
+            self.preview_status.configure(text="World region: press Preview to render it.")
+            self.preview_bar.configure(value=0)
+            self.preview_pct.configure(text="")
+            return
         job = self.preview_job()
         if job is None:
             return
@@ -784,8 +798,9 @@ class App(tk.Tk):
                 s = load_structure(instance.find_schematic(self.instance_var.get(), name))
                 for i, sl in enumerate(s.sub_levels):
                     note = "merged into main" if i in s.merged else "rotated, export separately"
-                    values.append(f"Sub-level {i}: {sl.size[0]}x{sl.size[1]}x{sl.size[2]}, "
-                                  f"{len(sl.blocks)} blocks ({note})")
+                    named = sable.structure_name(sl)
+                    values.append(f"Sub-level {i}{f' \u201c{named}\u201d' if named else ''}: "
+                                  f"{sl.size[0]}x{sl.size[1]}x{sl.size[2]}, {len(sl.blocks)} blocks ({note})")
             except Exception:
                 pass
         self.part_box["values"] = values
@@ -837,7 +852,7 @@ class App(tk.Tk):
             for ship in sable.ships(world):
                 s = ship.structure()
                 if s.blocks:
-                    rows.append((ship.id, f"{s.size[0]}x{s.size[1]}x{s.size[2]}", len(s.blocks)))
+                    rows.append((ship.id, f"{s.size[0]}x{s.size[1]}x{s.size[2]}", len(s.blocks), ship.name))
             return sorted(rows, key=lambda r: -r[2])
 
         def done(rows):

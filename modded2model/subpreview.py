@@ -161,7 +161,9 @@ def picture(path, vox, size=420, contraption_mode="world"):
         c = tuple(int(255 * v) for v in color)
         d.rectangle([0, 0, tw - 1, tw - 1], outline=c, width=4)
         sx, sy, sz = sl.size
-        d.text((8, 6), f"sub-level {i}", fill=c)
+        from .sable import structure_name
+        named = structure_name(sl)
+        d.text((8, 6), f"sub-level {i}" + (f": {named}" if named else ""), fill=c)
         d.text((8, 20), f"{sx}x{sy}x{sz}, {len(sl.blocks)} blocks", fill=(230, 230, 230))
         d.text((8, 34), "rotated (export with --sub-level)" if rotated else "merged into the main export",
                fill=(200, 200, 200))

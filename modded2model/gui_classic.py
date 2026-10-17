@@ -140,7 +140,7 @@ class ClassicApp(gui.App):
         ttk.Label(r, text="radius").pack(side="left", padx=(8, 2))
         self.radius_var = tk.StringVar(value="16")
         ttk.Entry(r, textvariable=self.radius_var, width=5).pack(side="left")
-        ttk.Button(r, text="Preview", command=self.refresh_preview).pack(side="right")
+        ttk.Button(r, text="Preview", command=self.preview_now).pack(side="right")
         ttk.Label(reg, text="Tip: press F3 in game to read block coordinates.", style="Hint.TLabel").pack(anchor="w")
 
         # Aeronautics ship
@@ -153,9 +153,9 @@ class ClassicApp(gui.App):
         self.ship_world_box = ttk.Combobox(r, textvariable=self.ship_world_var, state="readonly")
         self.ship_world_box.pack(side="left", fill="x", expand=True, padx=4)
         ttk.Button(r, text="Find ships", command=self.find_ships).pack(side="left")
-        cols = ("id", "size", "blocks")
+        cols = ("id", "size", "blocks", "name")  # name: from Sable or the ship's nameplates
         self.ship_tree = ttk.Treeview(shp, columns=cols, show="headings", selectmode="browse", height=5)
-        for c, w in zip(cols, (150, 110, 70)):
+        for c, w in zip(cols, (130, 90, 60, 170)):
             self.ship_tree.heading(c, text=c.title())
             self.ship_tree.column(c, width=w, anchor="w")
         self.ship_tree.pack(fill="both", expand=True, pady=4)
