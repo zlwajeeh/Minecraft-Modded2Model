@@ -614,11 +614,24 @@ class App(tk.Tk):
 
     def preview_job(self):
         """(title, function(vox, size) -> PIL image) for the current selection, or None."""
-        from . import subpreview
-        from .cleanup import clean
+        from . import contraptions, subpreview
+        from .cleanup import clean as clean_only
         from .schematic import load_structure
         tab = self.tabs.index(self.tabs.select())
         inst = self.instance_var.get()
+        var = getattr(self, "contraption_var", None)
+        mode = CONTRAPTION_ARGS.get(var.get(), "world") if var is not None else "world"
+
+        def with_moving(structure, vox, where):
+            """Clean up like the export, then add moving contraptions (where -> (list, mapping))."""
+            out = clean_only(structure, vox)[0]
+            if mode != "none":
+                found, to_local = where()
+                contraptions.attach(out, found, to_local, mode, exact=True)
+            return out
+
+        def clean(structure, vox):  # the preview's clean-up, with contraptions (schematic pieces)
+            return (with_moving(structure, vox, lambda: contraptions.for_schematic(path, structure)),)
         if tab == 0:
             name = self.selected_schematic()
             if not name:
@@ -631,7 +644,7 @@ class App(tk.Tk):
                     clean(load_structure(path, n), vox)[0], vox, size, f"{name}: sub-level {n}"))
 
             def make(vox, size):
-                img, n = subpreview.picture(path, vox, size)
+                img, n = subpreview.picture(path, vox, size, mode)
                 if img is None:
                     img = subpreview.structure_picture(clean(load_structure(path), vox)[0], vox, size, name)
                 return img
@@ -645,7 +658,8 @@ class App(tk.Tk):
             from .world import World
             world, dim = instance.find_world(inst, self.world_var.get()), self.dim_var.get()
             return "the region", lambda vox, size: subpreview.structure_picture(
-                clean(World(world, dim).extract(c1, c2), vox)[0], vox, size, "region")
+                with_moving(World(world, dim).extract(c1, c2), vox,
+                            lambda: contraptions.for_region(world, c1, c2, dim)), vox, size, "region")
         sel = self.ship_tree.selection()
         if not sel:
             return None
@@ -654,7 +668,9 @@ class App(tk.Tk):
 
         def make_ship(vox, size):
             ship = next(s for s in sable.ships(world) if s.id == ship_id)
-            return subpreview.structure_picture(clean(ship.structure(), vox)[0], vox, size, f"ship {ship_id}")
+            st = ship.structure()
+            return subpreview.structure_picture(with_moving(st, vox, lambda: contraptions.for_ship(world, ship, st)),
+                                                vox, size, f"ship {ship_id}")
         return f"ship {ship_id}", make_ship
 
     def show_preview(self, token, title, img, error):

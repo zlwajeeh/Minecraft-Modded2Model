@@ -101,7 +101,15 @@ def structure_picture(structure, vox, size=420, title=None):
     return img
 
 
-def picture(path, vox, size=420):
+def _with_contraptions(structure, source, mode):
+    """Attach a schematic piece's moving contraptions (source: its raw NBT) for the picture."""
+    from . import contraptions
+    if mode != "none":
+        contraptions.attach(structure, contraptions.in_schematic(source), contraptions._same, mode, exact=True)
+    return structure
+
+
+def picture(path, vox, size=420, contraption_mode="world"):
     """(PIL image, number of sub-levels) for schematic `path`; image None if it has none."""
     from PIL import Image, ImageDraw
     from .preview_render import render_textured
@@ -117,12 +125,12 @@ def picture(path, vox, size=420):
     parts = len(subs) + 1
     if main.blocks:
         with stage(0, 0.5 / parts, "Building main build"):
-            _add(overview, _faces(vox, main))
+            _add(overview, _faces(vox, _with_contraptions(main, root, contraption_mode)))
     thumbs = []
     for i, (sl, r) in enumerate(zip(subs, raw)):
         color = COLORS[i % len(COLORS)]
         with stage(0.5 * (i + 1) / parts, 0.5 * (i + 2) / parts, f"Building sub-level {i}"):
-            f = _faces(vox, sl)
+            f = _faces(vox, _with_contraptions(sl, r, contraption_mode))
         p = r.get("position", {})
         rot = _quat_matrix(r.get("orientation", {}))
         move = np.array([p.get(k, 0.0) for k in "xyz"]) * 16

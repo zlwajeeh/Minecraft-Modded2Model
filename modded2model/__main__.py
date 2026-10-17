@@ -214,8 +214,6 @@ def main(argv=None):
         builder = TexturedBuilder(vox, structure)
         with stage(0.45, 0.85, "Building model"):
             faces = builder.build(merge=a.merge)
-        for part in getattr(structure, "moving", []):
-            add_moving_part(faces, part, vox, a.merge)
         if a.cull_interior:
             from .visibility import FILL_TEXTURE, Interior
             interior = Interior(vox, structure, max(1, a.solidify))
@@ -268,50 +266,19 @@ def write_print(path, verts, tris):
 def _region_contraptions(a):
     """Moving contraptions anchored inside a world region: (list, save -> grid mapping)."""
     from . import contraptions
-    if a.contraptions == "none":
-        return None
-    lo = [min(u, v) for u, v in zip(a.corner1, a.corner2)]
-    hi = [max(u, v) for u, v in zip(a.corner1, a.corner2)]
-    found = contraptions.in_world(a.world, lo, hi, a.dimension)
-    return found, (lambda q: tuple(int(v - o) for v, o in zip(q, lo)))
+    return None if a.contraptions == "none" else contraptions.for_region(a.world, a.corner1, a.corner2, a.dimension)
 
 
 def _ship_contraptions(a, ship, structure):
     """Moving contraptions mounted on an Aeronautics ship: (list, save -> ship grid mapping)."""
     from . import contraptions
-    from .sable import SECTION_Y_OFFSET
-    if a.contraptions == "none":
-        return None
-    x0, z0 = contraptions.plot_origin(ship)
-    lx, ly, lz = structure.plot_lo
-    found = contraptions.on_ship(a.world, ship)
-    return found, (lambda q: (int(q[0] - x0 - lx), int(q[1] + SECTION_Y_OFFSET - ly), int(q[2] - z0 - lz)))
+    return None if a.contraptions == "none" else contraptions.for_ship(a.world, ship, structure)
 
 
 def _schematic_contraptions(a, structure):
-    """Moving contraptions saved in a schematic's entities: (list, schematic -> grid mapping)."""
-    from . import contraptions, nbt
-    if a.contraptions == "none" or a.sub_level is not None:
-        return None
-    found = contraptions.in_schematic(nbt.load(a.schematic))
-    shift = getattr(structure, "grid_shift", (0, 0, 0))
-    return found, (lambda q: tuple(int(v + s) for v, s in zip(q, shift)))
-
-
-def add_moving_part(faces, part, vox, merge):
-    """Draw a contraption turned to its exact angle into a GLB's faces: build its blocks on their
-    own grid, then move and turn the triangles about the anchor's centre (Create's rotation)."""
-    import numpy as np
-    from .blender import TexturedBuilder
-    sub = TexturedBuilder(vox, part.structure).build(merge=merge)
-    off = np.array(part.offset, float) * 16  # faces are in 1/16-block units
-    center = np.array(part.center, float) * 16
-    for key, (pos, uv) in sub.groups.items():
-        g = faces.groups.setdefault(key, [[], []])
-        for pp, uu in zip(pos, uv):
-            if len(pp):
-                g[0].append((pp + off - center) @ part.matrix.T + center)
-                g[1].append(uu)
+    """Moving contraptions saved in a schematic (or on its sub-levels): (list, mapping)."""
+    from . import contraptions
+    return None if a.contraptions == "none" else contraptions.for_schematic(a.schematic, structure)
 
 
 def print_prep(a, structure, vox, res, cell_mm):

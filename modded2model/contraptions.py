@@ -156,6 +156,47 @@ def in_schematic(root):
     return out
 
 
+def _same(q):
+    return tuple(int(v) for v in q)
+
+
+def for_schematic(path, structure, root=None):
+    """(contraptions, schematic -> grid mapping) for a structure from load_structure: a picked
+    sub-level reads that sub-level's own entities; the main build reads the schematic's, plus those
+    of every sub-level merged onto it (moved to where the sub-level was merged)."""
+    root = root if root is not None else nbt.load(path)
+    raw = root.get("sub_levels", [])
+    for i, sl in enumerate(getattr(structure, "sub_levels", [])):
+        if sl is structure and i < len(raw):
+            return in_schematic(raw[i]), _same
+    found = in_schematic(root)
+    for i in getattr(structure, "merged", []):
+        if i < len(raw):
+            p = raw[i].get("position", {})
+            off = [int(round(p.get(k, 0.0))) for k in "xyz"]
+            for c in in_schematic(raw[i]):
+                c.anchor = tuple(a + o for a, o in zip(c.anchor, off))
+                found.append(c)
+    shift = getattr(structure, "grid_shift", (0, 0, 0))
+    return found, (lambda q: tuple(int(v + s) for v, s in zip(q, shift)))
+
+
+def for_region(world, corner1, corner2, dimension="overworld"):
+    """(contraptions, world -> grid mapping) for World.extract(corner1, corner2)."""
+    lo = [min(u, v) for u, v in zip(corner1, corner2)]
+    hi = [max(u, v) for u, v in zip(corner1, corner2)]
+    return in_world(world, lo, hi, dimension), (lambda q: tuple(int(v - o) for v, o in zip(q, lo)))
+
+
+def for_ship(world, ship, structure):
+    """(contraptions, save -> ship grid mapping) for ship.structure()."""
+    from .sable import SECTION_Y_OFFSET
+    x0, z0 = plot_origin(ship)
+    lx, ly, lz = structure.plot_lo
+    return on_ship(world, ship), (lambda q: (int(q[0] - x0 - lx), int(q[1] + SECTION_Y_OFFSET - ly),
+                                             int(q[2] - z0 - lz)))
+
+
 # -- placing them ------------------------------------------------------------------------------------
 def _rot_matrix(axis, degrees):
     """Create's rotation (see the module notes) as a 3x3 matrix acting on column vectors."""
