@@ -7,3 +7,9 @@ exports/
 *.stl
 *.3mf
 *.glb
+
+# executable build output
+build/
+dist/
+*.spec
+release/
