@@ -3,6 +3,7 @@
 Sources are searched in order (first match wins), like resource packs:
 pass resource packs first, then mod jars, then the vanilla client jar.
 """
+import glob
 import hashlib
 import io
 import json
@@ -19,6 +20,67 @@ def _split_id(ident, default_ns="minecraft"):
 
 
 INDEX_DIR = os.path.join(os.path.expanduser("~"), ".modded2model", "assetindex")
+BORROW_INDEX = os.path.join(os.path.expanduser("~"), ".modded2model", "borrowindex.json")
+
+
+def _instances_root(paths):
+    """The launcher's instances folder, found from an instance's mods folder (.../instances/X/
+    [.]minecraft/mods), or None."""
+    for p in paths:
+        parts = os.path.normpath(os.path.abspath(p)).split(os.sep)
+        low = [x.lower() for x in parts]
+        if "instances" in low:
+            i = len(low) - 1 - low[::-1].index("instances")
+            return os.sep.join(parts[:i + 1])
+    return None
+
+
+def _jars_with_namespace(root, ns):
+    """Mod jars in any instance under `root` with assets for namespace `ns`, newest first. Which
+    namespaces each jar has is kept in an index (re-read only for jars that changed)."""
+    try:
+        with open(BORROW_INDEX, encoding="utf-8") as f:
+            index = json.load(f)
+    except (OSError, ValueError):
+        index = {}
+    found, changed = [], False
+    for jar in glob.glob(os.path.join(root, "*", "*minecraft", "mods", "*.jar")):
+        try:
+            st = os.stat(jar)
+        except OSError:
+            continue
+        sig = f"{st.st_size}:{int(st.st_mtime)}"
+        entry = index.get(jar)
+        if not entry or entry.get("sig") != sig:
+            try:
+                with zipfile.ZipFile(jar) as z:
+                    names = {n.split("/")[1] for n in z.namelist() if n.startswith("assets/") and n.count("/") >= 2}
+            except (OSError, zipfile.BadZipFile):
+                names = set()
+            entry = index[jar] = {"sig": sig, "ns": sorted(names)}
+            changed = True
+        if ns in entry["ns"]:
+            found.append((st.st_mtime, jar))
+    if changed:
+        try:
+            os.makedirs(os.path.dirname(BORROW_INDEX), exist_ok=True)
+            with open(BORROW_INDEX + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(index, f)
+            os.replace(BORROW_INDEX + ".tmp", BORROW_INDEX)
+        except OSError:
+            pass
+    return [jar for _, jar in sorted(found, reverse=True)]
+
+
+class _Borrowed:
+    """Stand-in source for Assets._json: reads `rel` from another instance's jar if it can."""
+    is_dir, skip_models = False, False
+
+    def __init__(self, assets):
+        self.assets = assets
+
+    def read(self, rel):
+        return self.assets._borrow(rel)
 
 
 class AssetSource:
@@ -106,6 +168,10 @@ class Assets:
             except OSError:
                 pass
         self._cache = {}
+        self._namespaces = None  # mods (asset namespaces) this instance has
+        self._borrow_root = _instances_root(paths)  # where the other instances are, if anywhere
+        self._borrowed = {}  # namespace -> [AssetSource] taken from other instances
+        self.borrowed_from = {}  # namespace -> jar path, for the export report
 
     # Mods that replace vanilla block models only as a rendering trick (Sodium builds stairs
     # from a full-size element with some faces left out). Their models look the same in game
@@ -123,11 +189,44 @@ class Assets:
                 inner.names = {n for n in inner._open().namelist() if n.startswith(("assets/", "META-INF/jarjar/"))}
             self._add(inner, known)
 
+    def _own_namespaces(self):
+        if self._namespaces is None:
+            ns = set()
+            for s in self.sources:
+                if s.is_dir:
+                    d = os.path.join(s.path, "assets")
+                    if os.path.isdir(d):
+                        ns.update(os.listdir(d))
+                else:
+                    ns.update(n.split("/")[1] for n in s.names if n.startswith("assets/") and n.count("/") >= 2)
+            self._namespaces = ns
+        return self._namespaces
+
+    def _borrow(self, rel):
+        """For a mod this instance lacks: the jar from another Prism/MultiMC instance that holds `rel`
+        (newest first), added as a last-resort source. Blocks from mods that aren't installed here
+        (old schematics, other packs) then still get their real models."""
+        parts = rel.split("/")
+        if self._borrow_root is None or len(parts) < 3 or parts[0] != "assets":
+            return None
+        ns = parts[1]
+        if ns in self._own_namespaces():
+            return None
+        if ns not in self._borrowed:
+            self._borrowed[ns] = [AssetSource(path) for path in _jars_with_namespace(self._borrow_root, ns)]
+        for s in self._borrowed[ns]:
+            if rel in s.names:
+                if s not in self.sources:
+                    self.sources.append(s)
+                    self.borrowed_from[ns] = s.path
+                return s.read(rel)
+        return None
+
     def _json(self, rel):
         if rel in self._cache:
             return self._cache[rel]
         data = None
-        for s in self.sources:
+        for s in self.sources + [_Borrowed(self)]:
             if "/models/" in rel and getattr(s, "skip_models", False):
                 continue
             raw = s.read(rel)
@@ -176,7 +275,7 @@ class Assets:
             data = s.read(rel)
             if data is not None:
                 return data
-        return None
+        return self._borrow(rel)
 
     def obj_mesh(self, ident):
         """Triangles (T, 3, 3) in 0..16 block units from a Wavefront .obj (NeoForge/Forge obj loader)."""

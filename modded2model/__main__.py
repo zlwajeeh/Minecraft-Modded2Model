@@ -388,6 +388,11 @@ class _Fattened:
 
 
 def report(vox):
+    borrowed = getattr(vox.assets, "borrowed_from", {})
+    if borrowed:
+        print("Models for mods not in this instance, borrowed from your other instances: " + "; ".join(
+            f"{ns} ({os.path.basename(p)}, {os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(p))))})"
+            for ns, p in sorted(borrowed.items())))
     if vox.unknown:
         print("No blockstate found (drawn as full cubes; add the mod jar or an override):", ", ".join(sorted(vox.unknown)))
     if vox.no_geometry:
