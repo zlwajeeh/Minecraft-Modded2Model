@@ -202,7 +202,7 @@ class Voxelizer:
                             c = _element_cells(el, me, res)
                             if len(c):
                                 shape[c[:, 0], c[:, 1], c[:, 2]] = True
-                if not any_el:
+                if not any_el and not codeshapes.empty_by_design(state):
                     self.no_geometry.add(state.name)
                     shape[:] = True
         self._shape_cache[state] = shape

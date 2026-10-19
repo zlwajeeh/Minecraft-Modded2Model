@@ -148,6 +148,10 @@ drawing full cubes. `--glass-backface-cull` makes glass single-sided in Blender.
 Torches, ladders, bars, redstone link antennas and other cut-out "card" parts are rebuilt from their
 texture's opaque pixels as solid pixel boxes, so they print and render as solid objects.
 
+Multi-block parts drawn by their mod's code are rebuilt the way the mod draws them: Create Deep Seas
+propellers placed in a matching 2x2 or 3x3 square become one big propeller (base, gear and blades),
+and Create Propulsion: Simulated thrusters merged into a 2x2x2 or 3x3x3 cube become one big thruster.
+
 Offroad wheel mounts get their tire (read from the block's stored data and the tire's OBJ model),
 axle and hub, so wheels print attached to the vehicle.
 

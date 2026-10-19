@@ -249,8 +249,11 @@ def assemble(structure, exact, grid, filled, keep_cells, cell_units, expo=None):
     out = []
     from .progress import report
     n = max(1, len(structure.blocks))
+    hidden = codeshapes.hidden_blocks(structure)
     for k, (x, y, z, st) in enumerate(structure.blocks):
         report(k / n, f"Building print model ({k}/{n} blocks)")
+        if (x, y, z) in hidden:  # drawn as part of a multiblock (structure_parts)
+            continue
         # Skip solid cubes buried on all six sides: they can't be seen and only add size.
         if full[(x, y, z)] and all(full.get((x + dx, y + dy, z + dz)) for dx, dy, dz in
                                    ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))):
