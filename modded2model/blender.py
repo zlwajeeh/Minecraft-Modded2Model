@@ -272,6 +272,7 @@ class TexturedBuilder:
         self.structure = structure
         self.faces = Faces()
         self.full = {(x, y, z): bool(vox.block_shape(st).all()) for x, y, z, st in structure.blocks}
+        self.hidden = codeshapes.hidden_blocks(structure)
         # What each block connects as for connected textures: copycats connect as the block
         # they copy (Copycats+ passes CT through), everything else as itself.
         identity, copycats, states = {}, set(), {}
@@ -442,6 +443,8 @@ class TexturedBuilder:
     def add_block(self, x, y, z, st):
         pos = (x, y, z)
         self.faces.block = pos
+        if pos in self.hidden:  # drawn as part of a multiblock (structure_parts)
+            return
         shift = np.array(pos, float) * 16
         assets, name = self.assets, st.name
         tint = FOLIAGE if "leaves" in name else GRASS if any(k in name for k in ("grass", "fern", "vine")) else None
@@ -639,6 +642,8 @@ class TexturedBuilder:
             if part:  # add_elements turns about the block centre: express x -> m x + t that way
                 c = np.array([8.0, 8, 8])
                 self.add_elements(part["elements"], part["textures"], m, t - c + m @ c, None, None)
+                if part.get("obj"):
+                    self.add_mesh(part["obj"], part["textures"], lambda tr, m=m, t=t: tr @ m.T + t)
         self.parts = self._kinetic_parts() if self.rig_kinetics else []  # rig: (part, its own Faces at rest)
         for moving in getattr(self.structure, "moving", []):  # a contraption turns with its bearing
             if moving.facing in codeshapes.PIPE_DIRS:

@@ -1011,4 +1011,141 @@ def structure_parts(structure):
         out.append((_HYD + "hydraulic_rod", m, a - m @ np.array([0, 1.0, 0])))
         out.append((_HYD + "hydraulic_hinge_sleeve", R, a))
         out.append((_HYD + "hydraulic_hinge_sleeve", _rotate_to((0, 1, 0), -d), b))
+    out += _propeller_cluster_parts(structure)
+    out += _thruster_multiblock_parts(structure)
+    return out
+
+
+def hidden_blocks(structure):
+    """Positions whose own model isn't drawn because a multiblock draws them as a whole
+    (Create Deep Seas propeller clusters: SubmarinePropellerClusterModel hides the members)."""
+    return set().union(*[members for _, members in propeller_clusters(structure).values()])
+
+
+# --- Create Deep Seas (create_submarine) multi-block propellers ---
+# SubmarinePropellerBlockEntity: an isolated, completely filled 3x3 (tried first) or 2x2 square of
+# propellers with the same facing and "reversed" turns into one big propeller. The square lies
+# across planeAxes(facing); the ring of blocks around it in that plane must hold no matching
+# propeller. The master (the 2x2's corner nearest -axes, or the 3x3's centre) draws it all.
+SUB_PROPELLER = "create_submarine:submarine_propeller"
+_PLANE_AXES = {"x": ((0, 1, 0), (0, 0, 1)), "y": ((1, 0, 0), (0, 0, 1)), "z": ((1, 0, 0), (0, 1, 0))}
+_AXIS_OF = {"up": "y", "down": "y", "north": "z", "south": "z", "east": "x", "west": "x"}
+_SUB_PROP = "create_submarine:block/submarine_propeller/"
+
+
+def _direction_rotation(facing):
+    """Minecraft's Direction.getRotation(): turns +y to face `facing` (right-handed matrices)."""
+    from .voxelize import _rot_matrix
+    rx, rz = (lambda d: _rot_matrix("x", d)), (lambda d: _rot_matrix("z", d))
+    return {"up": lambda: rx(0), "down": lambda: rx(180), "south": lambda: rx(90),
+            "north": lambda: rx(90) @ rz(180), "west": lambda: rx(90) @ rz(90),
+            "east": lambda: rx(90) @ rz(-90)}[facing]()
+
+
+def propeller_clusters(structure):
+    """{master pos: (size, frozenset of member positions)} for Deep Seas propeller clusters."""
+    cache = getattr(structure, "_m2m_prop_clusters", None)
+    if cache is not None and cache[0] == len(structure.blocks):
+        return cache[1]
+    key = {(x, y, z): (st.properties.get("facing", "up"), st.properties.get("reversed", "false"))
+           for x, y, z, st in structure.blocks if st.name == SUB_PROPELLER}
+
+    def isolated(corner, axes, k, n):
+        a0, a1 = axes
+        for i in range(-1, n + 1):
+            for j in range(-1, n + 1):
+                inside = 0 <= i < n and 0 <= j < n
+                q = tuple(corner[c] + a0[c] * i + a1[c] * j for c in range(3))
+                if (key.get(q) == k) != inside:
+                    return False
+        return True
+
+    found = {}
+    for pos, k in key.items():
+        axes = _PLANE_AXES[_AXIS_OF.get(k[0], "y")]
+        a0, a1 = axes
+        for n in (3, 2):
+            master = None
+            for i in range(n):
+                for j in range(n):
+                    corner = tuple(pos[c] - a0[c] * i - a1[c] * j for c in range(3))
+                    if isolated(corner, axes, k, n):
+                        master = corner if n == 2 else tuple(corner[c] + a0[c] + a1[c] for c in range(3))
+                        break
+                if master:
+                    break
+            if master:
+                found.setdefault(master, (n, set()))[1].add(pos)
+                break
+    clusters = {m: (n, frozenset(ms)) for m, (n, ms) in found.items() if len(ms) == n * n}
+    structure._m2m_prop_clusters = (len(structure.blocks), clusters)
+    return clusters
+
+
+def _propeller_cluster_parts(structure):
+    """SubmarinePropellerRenderer.renderCluster at rest (blade angle 0)."""
+    import numpy as np
+    out = []
+    states = {(x, y, z): st for x, y, z, st in structure.blocks}
+    for master, (n, _) in propeller_clusters(structure).items():
+        facing = states[master].properties.get("facing", "up")
+        a0, a1 = (np.array(a, float) for a in _PLANE_AXES[_AXIS_OF.get(facing, "y")])
+        centre = np.array(master, float) * 16 + 8 + (8 * (a0 + a1) if n == 2 else 0)
+        rf = _direction_rotation(facing)
+        s = 16.0 if n == 2 else 8.0
+        out.append((f"{_SUB_PROP}{n}x{n}_base", rf, centre + rf @ np.array([-s, -8, -s])))
+        for blades in (["2x2_propeller"] if n == 2 else ["3x3_gear", "3x3_propeller"]):
+            out.append((_SUB_PROP + blades, rf, centre + rf @ np.array([0, -8.0, 0])))
+    return out
+
+
+# --- Create Propulsion: Simulated multi-block thrusters ---
+# A 2x2x2 or 3x3x3 cube of thrusters (multi=true; their own models are empty) is drawn by its
+# controller, the cube's lowest corner (the others store ControllerOffX/Y/Z to it), as the
+# partial model scaled by Width and turned like the block (ThrusterRenderer.applyFacingRotation).
+THRUSTERS = ("createpropulsion:thruster", "createpropulsion:creative_thruster")
+
+
+def empty_by_design(state):
+    """Blocks whose model is empty on purpose: another block draws them (multiblock thrusters)."""
+    return state.name in THRUSTERS and state.properties.get("multi") == "true"
+
+
+def thruster_multiblocks(structure):
+    """[(controller pos, width, state)] of multiblock thrusters."""
+    data = getattr(structure, "block_data", None) or {}
+    multi = {(x, y, z): st for x, y, z, st in structure.blocks
+             if st.name in THRUSTERS and st.properties.get("multi") == "true"}
+    out, seen = [], set()
+    for pos, st in multi.items():  # saved block entity data says which block is the controller
+        d = data.get(pos) or {}
+        w = int(d.get("Width", 0) or 0)
+        if w in (2, 3) and "ControllerOffX" not in d:
+            out.append((pos, w, st))
+            seen.update(_cube(pos, w))
+    for pos in sorted(multi):  # no data: a full same-facing cube from its lowest corner
+        if pos in seen:
+            continue
+        for w in (3, 2):
+            cube = _cube(pos, w)
+            if all(q in multi and q not in seen and multi[q] == multi[pos] for q in cube):
+                out.append((pos, w, multi[pos]))
+                seen.update(cube)
+                break
+    return out
+
+
+def _cube(pos, w):
+    return [(pos[0] + i, pos[1] + j, pos[2] + k) for i in range(w) for j in range(w) for k in range(w)]
+
+
+def _thruster_multiblock_parts(structure):
+    import numpy as np
+    from .voxelize import _blockstate_matrix
+    out = []
+    for pos, w, st in thruster_multiblocks(structure):
+        ns, _, path = st.name.partition(":")
+        r = _blockstate_matrix(*NORTH_TO_FACING[st.properties.get("facing", "north")])
+        h = np.full(3, 8.0 * w)  # turned about the cube's centre, after scaling by the width
+        out.append((f"{ns}:partial/{path}_multiblock_{w}x{w}x{w}", r * w, np.array(pos, float) * 16 + h - r @ h))
     return out
