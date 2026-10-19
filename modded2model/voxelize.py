@@ -220,8 +220,11 @@ class Voxelizer:
         grid = np.zeros((sx * res, sy * res, sz * res), bool)
         from .progress import report
         n = max(1, len(structure.blocks))
+        hidden = codeshapes.hidden_blocks(structure)
         for k, (x, y, z, state) in enumerate(structure.blocks):
             report(k / n, f"Reading block shapes ({k}/{n})")
+            if (x, y, z) in hidden:  # drawn as part of a multiblock (structure_parts)
+                continue
             grid[x * res:(x + 1) * res, y * res:(y + 1) * res, z * res:(z + 1) * res] |= self.block_shape(state)
         return self._add_attachments(grid, structure)
 
@@ -240,6 +243,15 @@ class Voxelizer:
                     meshes.append(vox_tris + shift)
                 if len(smooth_tris):
                     smooth.append(smooth_tris + shift)
+        from .attachments import element_tris
+        for mid, m, t in codeshapes.structure_parts(structure):  # multiblocks, hydraulic rods
+            part = self.assets.model(mid)
+            if part is None:
+                continue
+            for el in part["elements"]:  # each box its own solid
+                meshes.append(element_tris(el) @ m.T + t)
+            if part.get("mesh") is not None and len(part["mesh"]):
+                meshes.append(part["mesh"] @ m.T + t)
         self.smooth_meshes = []
         self.grid_offset = np.zeros(3, int)
         if not meshes and not smooth:
