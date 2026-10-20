@@ -1,4 +1,4 @@
-# Minecraft-Modded2Model v1.0.5
+# Minecraft-Modded2Model v1.0.6
 
 Export Minecraft builds, modded blocks included, as watertight 3D-printable models.
 Block shapes come from the game's and mods' own model files,
@@ -8,7 +8,7 @@ so Create, Create Aeronautics and other mods work without per-block code.
 
 Get `Minecraft-Modded2Model-v<version>.exe` from the GitHub release and double-click it; nothing else to
 install. It opens the window. Given arguments it runs the command line instead, with the same
-options as `python -m modded2model` (e.g. `Minecraft-Modded2Model-v1.0.5.exe truck1 --instance <instance> -o truck.glb`).
+options as `python -m modded2model` (e.g. `Minecraft-Modded2Model-v1.0.6.exe truck1 --instance <instance> -o truck.glb`).
 Windows SmartScreen may warn about an unknown publisher the first time: More info > Run anyway.
 
 To build the exe yourself: `python -m pip install --user pyinstaller`, then run `packaging\build_exe.bat`;
