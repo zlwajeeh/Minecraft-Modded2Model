@@ -24,6 +24,8 @@ import math
 import numpy as np
 from scipy import ndimage
 
+from . import codeshapes
+
 AIR, BLOCK, FILLER = 0, 1, 2
 FACE6 = ndimage.generate_binary_structure(3, 1)
 TREE_PARTS = ("_log", "_leaves", "_wood", "vine")
@@ -355,7 +357,7 @@ def is_lesser(vox, state):
     """Lesser blocks are the small detailed ones (billboards and thin geometry:
     torches, flowers, rails, levers, buttons, ladders, signs...). Here: blocks whose shape fills
     less than a tenth of their cell; copycats are building material, never lesser."""
-    if "copycat" in state.name:
+    if codeshapes.is_copycat(state.name):
         return False
     shape = vox.block_shape(state)
     return 0 < shape.mean() < 0.1
