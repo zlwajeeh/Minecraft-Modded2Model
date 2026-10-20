@@ -101,7 +101,8 @@ For the Prism instance:
 python -m modded2model %APPDATA%/PrismLauncher/instances/AeronauticsModpack/minecraft/schematics/truck1.nbt -a %APPDATA%/PrismLauncher/instances/AeronauticsModpack/minecraft/mods -a %APPDATA%/PrismLauncher/libraries/com/mojang/minecraft/1.21.1/minecraft-1.21.1-client.jar -o truck1.stl
 ```
 
-Copycats+ and Create copycat blocks, and Create fluid pipes, get built-in shape rules
+Copycats+ and Create copycat blocks, Create Propulsion copycat wings (and the Create: High Seas
+rudder, which is shaped like one and copies a block the same way), and Create fluid pipes, get built-in shape rules
 (`modded2model/codeshapes.py`). Some are best guesses and marked "approx" there.
 
 By default every block is written with its exact model geometry: each Blockbench element is its own
@@ -151,6 +152,9 @@ texture's opaque pixels as solid pixel boxes, so they print and render as solid 
 Multi-block parts drawn by their mod's code are rebuilt the way the mod draws them: Create Deep Seas
 propellers placed in a matching 2x2 or 3x3 square become one big propeller (base, gear and blades),
 and Create Propulsion: Simulated thrusters merged into a 2x2x2 or 3x3x3 cube become one big thruster.
+
+Aeroworks control desks get the modules mounted in their sockets: steering wheels (plain, copper
+and dyed) and pedals, placed and tilted as the mod's renderer does.
 
 Offroad wheel mounts get their tire (read from the block's stored data and the tire's OBJ model),
 axle and hub, so wheels print attached to the vehicle.

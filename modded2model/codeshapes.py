@@ -463,7 +463,21 @@ def kinetic_shafts(state):
     return [("create:block/shaft_half", _HALF_TO[d]) for d in sides]
 
 
+def wing(thickness):
+    """Create Propulsion copycat wings: a plate `thickness` px thick through the block's middle,
+    across its facing (or axis). The High Seas rudder has the copycat wing's shape."""
+    def boxes(p):
+        axis = p.get("axis") or {"north": "z", "south": "z", "east": "x", "west": "x"}.get(p.get("facing", "up"), "y")
+        lo, hi = 8 - thickness / 2, 8 + thickness / 2
+        return [{"x": [lo, 0, 0, hi, 16, 16], "y": [0, lo, 0, 16, hi, 16], "z": [0, 0, lo, 16, 16, hi]}[axis]]
+    return boxes
+
+
 RULES = {
+    "createpropulsion:copycat_wing": wing(4),
+    "createpropulsion:copycat_wing_8": wing(8),
+    "createpropulsion:copycat_wing_12": wing(12),
+    "create_high_seas:rudder": wing(4),
     # Create Connected's copycats behave like the Copycats+ ones of the same shape
     "create_connected:copycat_block": lambda p: [[0, 0, 0, 16, 16, 16]],
     "create_connected:copycat_slab": slab,
@@ -952,6 +966,15 @@ ALIASES = {
     "copycats:copycat_large_cogwheel": "create:large_cogwheel",
 }
 
+# Copycat-style blocks without "copycat" in their name: they save a Material like a copycat
+# block and show it (shapes in RULES).
+COPYCAT_LIKE = {"create_high_seas:rudder"}
+
+
+def is_copycat(name):
+    """Copycats (Copycats+, Create, Create Connected) and blocks that work like them."""
+    return "copycat" in name or name in COPYCAT_LIKE
+
 
 # --- Parts drawn between two blocks (need the whole structure) ---
 _DIR = {"up": (0, 1, 0), "down": (0, -1, 0), "north": (0, 0, -1), "south": (0, 0, 1),
@@ -1013,6 +1036,7 @@ def structure_parts(structure):
         out.append((_HYD + "hydraulic_hinge_sleeve", _rotate_to((0, 1, 0), -d), b))
     out += _propeller_cluster_parts(structure)
     out += _thruster_multiblock_parts(structure)
+    out += _console_module_parts(structure)
     return out
 
 
@@ -1148,4 +1172,310 @@ def _thruster_multiblock_parts(structure):
         r = _blockstate_matrix(*NORTH_TO_FACING[st.properties.get("facing", "north")])
         h = np.full(3, 8.0 * w)  # turned about the cube's centre, after scaling by the width
         out.append((f"{ns}:partial/{path}_multiblock_{w}x{w}x{w}", r * w, np.array(pos, float) * 16 + h - r @ h))
+    return out
+
+
+# --- Aeroworks control desks and stands: modules in their sockets, copycat skins ---
+# AeroworksConsoles.deskType / standType: sockets in the console's frame (block units) with
+# yaw/pitch and the socket type that picks a module's parts. ConsoleRenderer: translate(0.5)
+# rotate(ConsoleBlock.rotationFor) translate(offset - 0.5) rotate(socket orientation)
+# translate(-0.5, 0, -0.5), then ModulePartRender's chain for each part.
+CONSOLE_DESKS = ("aeroworks:control_desk", "aeroworks:copycat_control_desk")
+CONSOLE_STANDS = ("aeroworks:control_stand", "aeroworks:copycat_control_stand")
+_PEDAL_SOCKETS = [((x, 0.125, 0.62578125), 180, 0, "pedal") for x in (0.25, 0.75, 0.5)]
+_DESK_SOCKETS = [((0.31172, 1.0289, 0.32119), 0, 22.5, "small"), ((0.68672, 1.0289, 0.32119), 0, 22.5, "small"),
+                 ((0.49922, 1.0289, 0.32119), 0, 22.5, "large")] + _PEDAL_SOCKETS
+_STAND_SOCKETS = [((0.3125, 1, 0.375), 0, 0, "small"), ((0.6875, 1, 0.375), 0, 0, "small"),
+                  ((0.5, 1, 0.375), 0, 0, "large")] + _PEDAL_SOCKETS
+_TO_Y_ROT = {"south": 0, "west": 90, "north": 180, "east": 270}
+_WHEEL_DYES = ("white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray",
+               "cyan", "purple", "blue", "brown", "green", "red", "black")
+
+# AeroworksModuleTypes: a module type is a list of parts: model, steps, the socket types it shows
+# in (all when empty) and sub-sockets (id, offset, socket type) that carry head modules (a button
+# on a lever's handle...). Steps act on the part's vertices in order (block units):
+# ("t", None, by), ("r", channel, axis, degrees, pivot, mirrored_only), ("s", channel, by).
+# A channel step moves by the channel's value, 0 at rest, so only fixed steps (channel None) are
+# drawn here; mirrored_only ones only on ceiling consoles.
+_AW = "aeroworks:block/"
+_STICK_PIVOT = (0.5, 0, 0.5)
+_PRESS = (0, -0.028125, 0)  # BUTTON_PRESS_SLIDE
+_SMALL_LARGE = ("small", "large")
+_X = (1, 0, 0)
+
+
+def _mpart(model, *steps, only=(), subs=()):
+    return {"model": _AW + model, "steps": steps, "only": only, "subs": subs}
+
+
+def _turn(channel, axis, degrees, pivot, mirrored_only=False):
+    return ("r", channel, axis, degrees, pivot, mirrored_only)
+
+
+def _move(by):
+    return ("t", None, by)
+
+
+def _press(model, channel, by, only=()):
+    """A button cap moved into place, pressed down along BUTTON_PRESS_SLIDE by its channel."""
+    return _mpart(model, _move(by), ("s", channel, _PRESS), only=only)
+
+
+def _lever(prefix, pivot, head, head_type):
+    return [_mpart(prefix + "/base"),
+            _mpart(prefix + "/stick", _turn("lever", _X, 3, pivot), subs=[("head", (0.5, head / 16, 0.5), head_type)])]
+
+
+def _joystick(prefix, pivot, head, head_type):
+    return [_mpart(prefix + "/base", only=_SMALL_LARGE),
+            _mpart(prefix + "/stick", _turn("x", (0, 0, -1), 3, pivot), _turn("y", _X, 3, pivot), only=_SMALL_LARGE,
+                   subs=[("head", (0.5, head / 16, 0.5), head_type)])]
+
+
+def _wheel(colour):
+    return [_mpart("controls/button/large_base"),
+            _mpart("controls/wheel/" + colour, _turn("wheel", (0, -1, 0), 12, _STICK_PIVOT),
+                   subs=[("head", (0.5, 0.125, 0.5), "wheel_hub")])]
+
+
+def _pedal(prefix):
+    return [_mpart(prefix + "/base"), _mpart(prefix + "/pedal", _turn("pedal", _X, -1.5, (0.5, 0.0625, 0.375)))]
+
+
+def _throttle(bases, levers, pivot):
+    return [_mpart(m) for m in bases] + [
+        _mpart(model, _turn(channel, _X, 3, pivot), _move((x / 16, 0, 0))) for channel, model, x in levers]
+
+
+def _button_grid(base, caps, copper):
+    """Button panels and keypads: a base and one cap per button at (x, z) px, light or dark (copper)."""
+    if copper:
+        return [_mpart(base)] + [_press("controls/button/copper/" + ("light" if light else "dark"), f"button{i}",
+                                        (x / 16, 0.09375, z / 16)) for i, (x, z, light) in enumerate(caps, 1)]
+    return [_mpart(base)] + [_press("controls/button/button", f"button{i}", (x / 16, 0.03125, z / 16))
+                             for i, (x, z, _) in enumerate(caps, 1)]
+
+
+_PANEL_CAPS = [(-1.05, -1.05, True), (1.05, -1.05, False), (-1.05, 1.05, False), (1.05, 1.05, True)]
+_KEYPAD_CAPS = [(x, z, i % 2 == 0) for i, (z, x) in enumerate((z, x) for z in (-2.1, 0, 2.1) for x in (-2.1, 0, 2.1))]
+# buttonCore: how a button module looks on each kind of head, plus its plain-socket parts below
+_BUTTON_ON_HEADS = [
+    _mpart("controls/button/joystick_handle", _move((0, -0.21875, 0)), only=("joystick_head",)),
+    _mpart("controls/joystick/copper/button", ("s", "press", _PRESS),
+           only=("copper_joystick_head", "copper_lever_handle", "copper_yoke_grip")),
+    _mpart("controls/button/lever_handle", _move((0, -0.15624, 0)), only=("lever_handle",)),
+    _press("joystick/button", "press", (0, -1.34375, 0), only=("pedestal_head",)),
+    _mpart("controls/button/button", ("s", "press", _PRESS), _turn(None, (0, 0, 1), -90, _STICK_PIVOT),
+           _move((0.125, -0.078125, 0)), only=("lever_handle",)),
+    _press("controls/button/button", "press", (0, 0, 0), only=("wheel_hub", "yoke_grip"))]
+
+
+def _yoke(prefix, copper, stick_pivot, turn_pivot, connection, tip, grips):
+    """Yoke: base, column (pitches about the stick pivot) and the handle (the copper one's wheel
+    turned around) on the column's tip, tilted 22.5 deg back; ceiling consoles turn it over."""
+    c, t = connection, tip
+    stick = _mpart(prefix + "/stick", *([] if copper else [_move((0, -0.015625, 0))]),
+                   _turn("pitch", _X, 3, stick_pivot))
+    grip_type = "copper_yoke_grip" if copper else "yoke_grip"
+    return [_mpart(prefix + "/base"), stick, _mpart(
+        prefix + ("/wheel" if copper else "/handle"),
+        *([_turn(None, (0, 1, 0), 180, (0.5, 0, 0.5))] if copper else []),
+        _turn("turn", (0, 0, -1), 4, turn_pivot), _turn(None, (0, 0, 1), 180, turn_pivot, True),
+        _turn("pitch", _X, -3, c), _move((t[0] - c[0], t[1] - c[1], t[2] - c[2])), _turn(None, _X, -22.5, t),
+        _turn("pitch", _X, 3, stick_pivot),
+        subs=[(side, at, grip_type) for side, at in zip(("left", "right"), grips)])]
+
+
+MODULE_TYPES = {
+    "lever": _lever("controls/lever", _STICK_PIVOT, 5, "lever_handle"),
+    "copper_lever": _lever("controls/lever/copper", (0.5, 0.09375, 0.5), 6.9, "copper_lever_handle"),
+    "button_panel": _button_grid("controls/button/large_base", _PANEL_CAPS, False),
+    "copper_button_panel": _button_grid("controls/button/copper/base_3x3", _PANEL_CAPS, True),
+    "button_keypad": _button_grid("controls/button/keypad_base", _KEYPAD_CAPS, False),
+    "copper_button_keypad": _button_grid("controls/button/copper/base_4x4", _KEYPAD_CAPS, True),
+    "joystick": _joystick("controls/joystick", _STICK_PIVOT, 5, "joystick_head") + [
+        _mpart("joystick/handle", _turn("y", _X, 3, (0.5, 0.15625, 0.5)), _turn("x", (0, 0, -1), 3, (0.5, 0.15625, 0.5)),
+               only=("pedestal",), subs=[("grip", (0.5, 1.34375, 0.5), "pedestal_head")])],  # on a pedestal
+    "copper_joystick": _joystick("controls/joystick/copper", (0.5, 0.0625, 0.5), 5.9, "copper_joystick_head"),
+    "button": _BUTTON_ON_HEADS + [
+        _mpart("controls/joystick/base", only=_SMALL_LARGE),
+        _press("controls/button/button", "press", (0, 0.5 / 16, 0), only=_SMALL_LARGE + ("joystick_head",))],
+    "copper_button": _BUTTON_ON_HEADS + [
+        _mpart("controls/button/copper/base_2x2", only=_SMALL_LARGE),
+        _press("controls/button/copper/light", "press", (0, 0.09375, 0), only=_SMALL_LARGE),
+        _press("controls/button/button", "press", (0, 0.5 / 16, 0), only=("joystick_head",))],
+    "wheel": _wheel("wheel"),
+    "copper_wheel": _wheel("copper"),
+    **{f"{dye}_wheel": _wheel(dye) for dye in _WHEEL_DYES},
+    "throttle_quadrant": _throttle(
+        ["controls/throttle/base", "controls/throttle/quadrant"],
+        [("red", "controls/throttle/stick_r", -3), ("amber", "controls/throttle/stick_a", -1),
+         ("green", "controls/throttle/stick_g", 1), ("blue", "controls/throttle/stick_b", 3)], _STICK_PIVOT),
+    "copper_throttle_quadrant": _throttle(
+        ["controls/throttle/copper/base"],
+        [("red", "controls/throttle/copper/stick_r", -3.75), ("amber", "controls/throttle/copper/stick_o", -1.25),
+         ("green", "controls/throttle/copper/stick_g", 1.25), ("blue", "controls/throttle/copper/stick_b", 3.75)],
+        (0.5, 0.09375, 0.5)),
+    "yoke": _yoke("controls/yoke", False, _STICK_PIVOT, (0.5, 0.109375, 0.5), (0.5, 0.109375, 0.3125),
+                  (0.5, 0.296875, 0.5), [(0.25, 0.34375, 0.46875), (0.75, 0.34375, 0.46875)]),
+    "copper_yoke": _yoke("controls/yoke/copper", True, (0.5, 0.09375, 0.5), (0.5, 0.09375, 0.5),
+                         (0.5, 0.090625, 0.384375), (0.5, 0.359375, 0.5), [(0.6875, 0.21875, 0.5), (0.3125, 0.21875, 0.5)]),
+    "pedal": _pedal("controls/pedal"),
+    "copper_pedal": _pedal("controls/pedal/copper"),
+}
+_FIXED_ORIENTATION = ("pedal", "copper_pedal")  # ModuleType.fixedOrientation: Config orientation ignored
+
+
+def _affine(r=None, t=(0, 0, 0)):
+    import numpy as np
+    m = np.eye(4)
+    if r is not None:
+        m[:3, :3] = r
+    m[:3, 3] = t
+    return m
+
+
+def _about(r, pivot):
+    import numpy as np
+    p = np.asarray(pivot, float)
+    return _affine(r, p - r @ p)
+
+
+def _axis_rotation(axis, degrees):
+    """Right-handed rotation about an axis (JOML Quaternionf.rotationAxis)."""
+    import math
+    import numpy as np
+    k = np.asarray(axis, float) / np.linalg.norm(axis)
+    K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    a = math.radians(degrees)
+    return np.eye(3) + math.sin(a) * K + (1 - math.cos(a)) * K @ K
+
+
+def module_parts(module, socket_type, base, mirrored=False):
+    """[(model id, 4x4 matrix in block units)] for a mounted module (its saved compound: Type,
+    Config, Heads) in a socket of socket_type, at rest (ModulePartRender.flatten): the
+    module's yaw (Config orientation, degrees) about the socket centre, each matching part's
+    fixed steps, and the head modules on its sub-sockets. [] for an unknown type."""
+    from .voxelize import _rot_matrix
+    path = str(module.get("Type", "")).partition(":")[2]
+    parts = MODULE_TYPES.get(path)
+    if parts is None:
+        return []
+    yaw = 0 if path in _FIXED_ORIENTATION else (module.get("Config") or {}).get("orientation", 0)
+    if isinstance(yaw, (int, float)) and yaw:
+        base = base @ _about(_rot_matrix("y", -yaw), (0.5, 0, 0.5))
+    heads = module.get("Heads") or {}
+    out = []
+    for part in parts:
+        if part["only"] and socket_type not in part["only"]:
+            continue
+        m = base
+        for step in reversed(part["steps"]):  # the first step acts on the vertices first
+            if step[1] is not None:  # channel-driven: 0 at rest
+                continue
+            if step[0] == "t":
+                m = m @ _affine(t=step[2])
+            elif step[0] == "r" and (mirrored or not step[5]):
+                m = m @ _about(_axis_rotation(step[2], step[3]), step[4])
+        out.append((part["model"], m))
+        for sid, offset, sub_type in part["subs"]:
+            if isinstance(heads.get(sid), dict):  # placement: translate(offset) translate(-0.5, 0, -0.5)
+                at = (offset[0] - 0.5, offset[1], offset[2] - 0.5)
+                out += module_parts(heads[sid], sub_type, m @ _affine(t=at), mirrored)
+    return out
+
+
+def _console_module_parts(structure):
+    import numpy as np
+    from .voxelize import _rot_matrix
+    out = []
+    data = getattr(structure, "block_data", None) or {}
+    for x, y, z, st in structure.blocks:
+        sockets = _DESK_SOCKETS if st.name in CONSOLE_DESKS else _STAND_SOCKETS if st.name in CONSOLE_STANDS else None
+        if sockets is None:
+            continue
+        ceiling = st.properties.get("ceiling") == "true"
+        rd = _rot_matrix("y", -_TO_Y_ROT.get(st.properties.get("facing", "south"), 0))
+        if ceiling:
+            rd = rd @ _rot_matrix("z", 180)
+        for module in (data.get((x, y, z)) or {}).get("Modules", []):
+            socket = module.get("Socket")
+            if not isinstance(socket, int) or not 0 <= socket < len(sockets):
+                continue
+            offset, yaw, pitch, socket_type = sockets[socket]
+            rs = _rot_matrix("y", -yaw) @ _rot_matrix("x", pitch)
+            base = (_affine(t=np.array([x, y, z], float) + 0.5) @ _affine(rd) @ _affine(t=np.array(offset) - 0.5)
+                    @ _affine(rs) @ _affine(t=(-0.5, 0, -0.5)))
+            for mid, m in module_parts(module, socket_type, base, ceiling):
+                out.append((mid, m[:3, :3], m[:3, 3] * 16))  # models are in 1/16 units
+    return out
+
+
+# DeskSkinModel (copycat control desk and stand): the console is rebuilt from its skin blocks'
+# quads the way Create copycats are (BakedModelHelper.cropAndMove): each piece crops the skin
+# block to a box (block units), keeps the quads of the listed faces and moves them into place,
+# so a face shows the part of the block's texture it was cropped from. FRAME pieces take
+# SkinFrameMaterial, PANEL pieces SkinPanelMaterial (Create's copycat base when unset). Pieces
+# are in the north-facing frame; desk_skin_rotation turns them, crop included, and "pitched"
+# pieces then tilt with the desk's panel (DESK_PANEL_PITCH: degrees about x through a point).
+COPYCAT_CONSOLES = ("aeroworks:copycat_control_desk", "aeroworks:copycat_control_stand")
+DESK_PANEL_PITCH = ((0.5, 0.4734375, 0.6484375), -22.5)
+_SKIN_STEPS = {"north": 0, "east": 1, "south": 2, "west": 3}
+
+
+def desk_skin_rotation(state):
+    """DeskSkinModel$Orientation as a matrix about the block centre: a ceiling console turns
+    180 deg about x, then quarter turns about y (north -> east) by facing, plus two on ceilings."""
+    import numpy as np
+    ceiling = state.properties.get("ceiling") == "true"
+    steps = (_SKIN_STEPS.get(state.properties.get("facing", "north"), 0) + (2 if ceiling else 0)) % 4
+    quarter = np.array([[0, 0, -1], [0, 1, 0], [1, 0, 0]], float)  # (x, z) -> (-z, x)
+    return np.linalg.matrix_power(quarter, steps) @ np.diag([1.0, -1, -1] if ceiling else [1.0, 1, 1])
+
+
+def desk_skin_pieces(state):
+    """[(zone, crop min, crop max, move, faces, pitched)] of a copycat desk or stand, block units,
+    north-facing frame (DeskSkinModel framePieces/panelPieces, standFramePieces/standPanelPieces).
+    open_east / open_west (joined to a neighbour) drop that side's wall and widen the rest."""
+    p = state.properties
+    open_e, open_w = p.get("open_east") == "true", p.get("open_west") == "true"
+    lo, hi = (0 if open_w else 2) / 16, (16 if open_e else 14) / 16
+    zero = (0, 0, 0)
+    n, s, e, w, u, d = "north", "south", "east", "west", "up", "down"
+    frame = [((0, 0, 0.25), (1, 0.125, 1), zero, (n, s)),  # base: 0..16 x 0..2 x 4..16, in strips
+             ((0, 0, 0), (1, 0.125, 0.75), (0, 0, 0.25), (e, w)),
+             ((0, 0, 0), (1, 0.125, 0.375), (0, 0, 0.25), (u, d)),
+             ((0, 0, 0.625), (1, 0.125, 1), zero, (u, d))]
+    if state.name.endswith("_stand"):
+        frame += [((lo, 0.125, 0.5), (hi, 0.375, 1), zero, (n, s)), ((lo, 0.375, 0.875), (hi, 1, 1), zero, (n, s, u))]
+    else:
+        frame += [((lo, 0.125, 0.875), (hi, 1, 1), zero, (n, s, u)), ((lo, 0.125, 0.5), (hi, 0.8125, 0.875), zero, (n,)),
+                  ((lo, 0.4375, 0.4375), (hi, 0.8125, 0.5), zero, (n, d))]
+    for x0, is_open in ((0.875, open_e), (0, open_w)):  # addWallPieces
+        if not is_open:
+            frame += [((x0, 0.125, 0.375), (x0 + 0.125, 1, 1), zero, (n, s, u, d)),
+                      ((x0, 0.125, 0), (x0 + 0.125, 1, 0.625), (0, 0, 0.375), (e, w))]
+    out = [("frame", a, b, m, f, False) for a, b, m, f in frame]
+
+    def cell(c):  # DeskSkinModel$Cell(from, to, shift): crop from+shift..to+shift, moved by -shift
+        return c[0] + c[2], c[1] + c[2], -c[2]
+
+    if state.name.endswith("_stand"):
+        xs = [(0 if open_w else 0.125, 0.5, 0 if open_w else -0.125), (0.5, 1 if open_e else 0.875, 0 if open_e else 0.125)]
+        for cx in map(cell, xs):
+            for yi, cy in enumerate(map(cell, [(0.375, 0.6875, -0.375), (0.6875, 1, 0)])):
+                for zi, cz in enumerate(map(cell, [(0.375, 0.625, -0.375), (0.625, 0.875, 0.125)])):
+                    faces = ((n,) if zi == 0 else ()) + ((d,) if yi == 0 else (u,))
+                    out.append(("panel", (cx[0], cy[0], cz[0]), (cx[1], cy[1], cz[1]), (cx[2], cy[2], cz[2]), faces, False))
+        return out
+    xs = [(lo, hi, 0)] if open_e and open_w else [(lo, 0.5, 0 if open_w else -0.125), (0.5, hi, 0 if open_e else 0.125)]
+    zs = [(0.4828125, 0.8578125, -0.4828125), (0.8578125, 1.2953125, -0.2953125)]
+    for xi, cx in enumerate(map(cell, xs)):
+        for zi, cz in enumerate(map(cell, zs)):
+            move = (cx[2], -0.025, cz[2])
+            out.append(("panel", (cx[0], 0.875, cz[0]), (cx[1], 1, cz[1]), move, (u, d), True))
+            sides = ((w,) if xi == 0 else ()) + ((e,) if xi == len(xs) - 1 else ()) + (
+                (n,) if zi == 0 else ()) + ((s,) if zi == len(zs) - 1 else ())
+            out.append(("panel", (cx[0], 0.9375, cz[0]), (cx[1], 1, cz[1]), move, sides, True))  # top rim of the slab
+            out.append(("panel", (cx[0], 0, cz[0]), (cx[1], 0.0625, cz[1]), (move[0], 0.85, move[2]), sides, True))
     return out

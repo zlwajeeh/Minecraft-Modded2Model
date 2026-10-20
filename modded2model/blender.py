@@ -279,7 +279,7 @@ class TexturedBuilder:
         for x, y, z, st in structure.blocks:
             pos = (x, y, z)
             states[pos] = st
-            if "copycat" not in st.name:
+            if not codeshapes.is_copycat(st.name):
                 identity[pos] = st.name
                 continue
             copycats.add(pos)
@@ -428,6 +428,34 @@ class TexturedBuilder:
                   "west": (z, 16 - y), "east": (16 - z, 16 - y)}[face]
             self.faces.add_tris(texs.get(face), None, tri + shift, np.column_stack(uv) / 16.0)
 
+    def _add_desk_skin(self, st, data, shift, pos):
+        """Copycat control desk / stand (codeshapes.desk_skin_pieces): each piece is the part of
+        its zone's skin block it was cropped from, moved into place and turned with the desk."""
+        r = codeshapes.desk_skin_rotation(st)
+        pivot, angle = codeshapes.DESK_PANEL_PITCH
+        tilt = r @ _rot_matrix("x", angle) @ r.T
+        tilt_at = (r @ (np.array(pivot) - 0.5) + 0.5) * 16
+        textures = {}
+        for zone, lo, hi, move, faces, pitched in codeshapes.desk_skin_pieces(st):
+            if zone not in textures:
+                mat = (data or {}).get("SkinFrameMaterial" if zone == "frame" else "SkinPanelMaterial")
+                if not mat or mat.get("Name") in (None, "minecraft:air"):
+                    mat = {"Name": "create:copycat_base"}
+                textures[zone] = self._material_textures(mat)
+            a, b = (r @ (np.array(lo) - 0.5) + 0.5) * 16, (r @ (np.array(hi) - 0.5) + 0.5) * 16
+            lo16, hi16 = np.minimum(a, b), np.maximum(a, b)  # the crop, in the skin block's space
+            for face in faces:
+                side = _rotate_dir(face, r)
+                corners = np.asarray(_corners(side, lo16, hi16), float) + r @ np.array(move) * 16
+                if pitched:
+                    corners = (corners - tilt_at) @ tilt.T + tilt_at
+                tex, uvc = textures[zone].get(side), _uv_corners(_default_uv(side, lo16, hi16), 0)
+                sheet = self.ct.sheet(tex)
+                if sheet:
+                    col, row = self.ct.tile(pos, side, sheet[1])
+                    tex, uvc = sheet[0], _ct_uvs(uvc, col, row, sheet[1])
+                self.faces.add_quad(tex, None, corners + shift, uvc)
+
     # --- blocks ---------------------------------------------------------------------
     def _nameplate_text(self, st, data, shift):
         """The name written on an Aeronautics nameplate row (textrender.nameplate_text): glyph
@@ -451,9 +479,12 @@ class TexturedBuilder:
         data = self.structure.block_data.get(pos)
         if name.endswith("_nameplate") or name.endswith(":nameplate"):  # simulated:<dye>_nameplate
             self._nameplate_text(st, data, shift)
+        if name in codeshapes.COPYCAT_CONSOLES:  # built from its skin blocks (DeskSkinModel)
+            self._add_desk_skin(st, data, shift, pos)
+            return
         material = None
         if name in codeshapes.ALIASES:
-            if "copycat" in name:  # copycat stairs/doors/trapdoors: borrowed shape, copied block's texture
+            if codeshapes.is_copycat(name):  # copycat stairs/doors/trapdoors: borrowed shape, copied block's texture
                 mat = (data or {}).get("Material")
                 if not mat or mat.get("Name") in (None, "minecraft:air"):
                     mat = {"Name": "create:copycat_base"}
