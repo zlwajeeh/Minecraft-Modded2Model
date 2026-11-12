@@ -262,6 +262,22 @@ bone. The animations turn the bones, and you can pose them by hand. The bones ca
 The 3D print block operations (`modded2model/printsteps.py`) are ported from ObjFileManip.cpp of Eric
 Haines' open-source Mineways.
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org) (applied for; until it is approved, release exes are unsigned and
+Windows SmartScreen asks you to click More info > Run anyway).
+
+- Committers and reviewers: [zlwajeeh](https://github.com/zlwajeeh)
+- Approvers: [zlwajeeh](https://github.com/zlwajeeh)
+
+Every signed release is built from this repository's source by GitHub Actions; only the exe for a tagged
+release is signed, and each signing is approved by hand.
+
+**Privacy:** this program will not transfer any information to other networked systems unless
+specifically requested by the user or the person installing or operating it. It works entirely offline:
+it reads the game and mod files on your computer and writes the models you export.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Copyright (c) 2026 Zach Mitchell (ZNO Productions).
