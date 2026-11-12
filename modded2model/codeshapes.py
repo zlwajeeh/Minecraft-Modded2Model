@@ -900,6 +900,14 @@ def state_extra_models(state):
         ns, _, path = state.name.partition(":")
         rev = "_reversed" if state.properties.get("reversed") == "true" else ""
         return [f"{ns}:block/{path}/propeller{rev}"]
+    if state.name.startswith("createbigcannons:"):
+        # Big Cannons sliding and quick-firing breeches: the breechblock is drawn by the block
+        # entity renderer (CBCClientCommon.getBreechblockForState); closed, it fills the slot
+        # of the breech model in that model's own frame.
+        path = state.name.partition(":")[2]
+        for kind in ("_quickfiring_breech", "_sliding_breech"):
+            if path.endswith(kind):
+                return [f"createbigcannons:item/{path[:-len(kind)]}_sliding_breechblock"]
     return []
 
 
@@ -945,6 +953,8 @@ FACING_ROTATION = {"up": (0, 0), "down": (180, 0), "north": (90, 0), "east": (90
 
 # Blocks shaped exactly like another block that has model files.
 ALIASES = {
+    "minecraft:grass": "minecraft:short_grass",  # renamed in 1.20.3; older schematics keep the old id
+    "amendments:carpet_stairs": "minecraft:oak_stairs",  # stairs with a carpet laid over them
     "create_connected:copycat_stairs": "minecraft:oak_stairs",
     "create_connected:copycat_fence": "minecraft:oak_fence",
     "create_connected:copycat_fence_gate": "minecraft:oak_fence_gate",
@@ -1130,9 +1140,97 @@ def _propeller_cluster_parts(structure):
 THRUSTERS = ("createpropulsion:thruster", "createpropulsion:creative_thruster")
 
 
-def empty_by_design(state):
-    """Blocks whose model is empty on purpose: another block draws them (multiblock thrusters)."""
+def empty_by_design(state, resolved=None):
+    """Blocks with nothing to draw on purpose: fluids, an open Create-style sliding door (its
+    state says visible=false and picks the empty air model: the door has slid aside), and blocks
+    another block draws (multiblock thrusters). resolved: assets.resolve(state), if known.
+    Copycats also use the air model, for shapes their own code builds: those are not empty."""
+    from .schematic import FLUIDS
+    if state.name in FLUIDS:
+        return True
+    if (state.properties.get("visible") == "false" and resolved
+            and all(m.get("id") == "minecraft:block/air" for m, _, _ in resolved)):
+        return True
     return state.name in THRUSTERS and state.properties.get("multi") == "true"
+
+
+# --- vanilla-style blocks the game draws by code (block entity renderers): beds, chests, signs,
+# banners. Their JSON models are empty, so they get these boxes instead of a full cube. Only
+# used when a block's own models have no geometry, so a mod that ships real models keeps them.
+_WOODS = ("dark_oak", "pale_oak", "oak", "spruce", "birch", "jungle", "acacia", "mangrove", "cherry", "bamboo",
+          "crimson", "warped")
+_DYES = ("light_blue", "light_gray", "white", "orange", "magenta", "yellow", "lime", "pink", "gray", "cyan",
+         "purple", "blue", "brown", "green", "red", "black")
+
+
+def _facing_boxes(boxes, facing):
+    """Boxes authored for facing north, turned about the block's upright axis to `facing`."""
+    out = []
+    for x0, y0, z0, x1, y1, z1 in boxes:
+        if facing == "south":
+            x0, z0, x1, z1 = 16 - x1, 16 - z1, 16 - x0, 16 - z0
+        elif facing == "east":
+            x0, z0, x1, z1 = 16 - z1, x0, 16 - z0, x1
+        elif facing == "west":
+            x0, z0, x1, z1 = z0, 16 - x1, z1, 16 - x0
+        out.append([x0, y0, z0, x1, y1, z1])
+    return out
+
+
+def _rotation_facing(p):
+    """The nearest side for a standing sign's or banner's 16-step rotation (0 = south)."""
+    try:
+        return ("south", "west", "north", "east")[int(round(int(p.get("rotation", 0)) / 4)) % 4]
+    except ValueError:
+        return "south"
+
+
+def fallback_boxes(state):
+    """Stand-in boxes for a block whose models are empty because the game draws it by code,
+    or None if this isn't one of the kinds known here."""
+    path, p = state.name.split(":")[-1], state.properties
+    facing = p.get("facing", "north")
+    if path.endswith("_bed"):  # facing: from the foot to the head; legs at each half's outer end
+        legs = [[0, 0, 0, 3, 3, 3], [13, 0, 0, 16, 3, 3]] if p.get("part") == "head" else \
+               [[0, 0, 13, 3, 3, 16], [13, 0, 13, 16, 3, 16]]
+        return _facing_boxes([[0, 3, 0, 16, 9, 16]] + legs, facing)
+    if path == "chest" or path.endswith("_chest"):  # a double chest's halves reach each other
+        kind = p.get("type", "single")
+        body = [1 if kind != "right" else 0, 0, 1, 15 if kind != "left" else 16, 14, 15]
+        return _facing_boxes([body] + ([[7, 7, 0, 9, 11, 1]] if kind == "single" else []), facing)
+    if path.endswith("_wall_hanging_sign"):  # a bar across the top, the board under it
+        return _facing_boxes([[0, 14, 6, 16, 16, 10], [1, 0, 7, 15, 10, 9]], facing)
+    if path.endswith("_hanging_sign"):
+        return _facing_boxes([[1, 0, 7, 15, 10, 9], [3, 10, 7.5, 4, 16, 8.5], [12, 10, 7.5, 13, 16, 8.5]],
+                             _rotation_facing(p))
+    if path.endswith("_wall_sign"):  # on the block behind it
+        return _facing_boxes([[0, 4.5, 14, 16, 12.5, 16]], facing)
+    if path.endswith("_sign"):  # a post and a board
+        return _facing_boxes([[7.33, 0, 7.33, 8.67, 9.33, 8.67], [0, 9.33, 7.33, 16, 17.33, 8.67]], _rotation_facing(p))
+    if path.endswith("_wall_banner"):  # the cloth hangs down past the block, against the wall
+        return _facing_boxes([[1, 14, 14, 15, 15.5, 16], [1.33, -12, 15, 14.67, 14.67, 16]], facing)
+    if path.endswith("_banner"):  # a pole with a bar, and the cloth in front of it
+        return _facing_boxes([[7.33, 0, 7.33, 8.67, 30, 8.67], [1, 28, 7.33, 15, 30, 8.67],
+                              [1.33, 1.33, 6.33, 14.67, 28, 7.33]], _rotation_facing(p))
+    return None
+
+
+def rule_texture(name):
+    """The texture for a rule-shaped block that isn't a copycat (RULE_TEXTURES, or a likely one
+    for the fallback_boxes kinds: the bed's or banner's wool, the sign's or chest's planks)."""
+    if name in RULE_TEXTURES:
+        return RULE_TEXTURES[name]
+    path = name.split(":")[-1]
+    if not path.endswith(("_bed", "chest", "_sign", "_banner")):
+        return None
+    if path == "ender_chest":
+        return "minecraft:block/obsidian"
+    if not path.endswith("chest"):
+        dye = next((d for d in _DYES if path.startswith(d + "_")), None)
+        if dye:
+            return f"minecraft:block/{dye}_wool"
+    wood = next((w for w in _WOODS if path.startswith(w + "_")), "oak")
+    return f"minecraft:block/{wood}_planks"
 
 
 def thruster_multiblocks(structure):

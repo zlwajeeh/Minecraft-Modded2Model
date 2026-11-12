@@ -51,9 +51,11 @@ def main(argv=None):
                    help="moving Create contraptions (bearings, propellers, windmills): 'world' = at their "
                         "saved angle (exact in GLB, nearest quarter turn in prints), 'snap' = nearest quarter "
                         "turn, 'assembled' = as built (angle 0), 'none' = leave them out")
-    p.add_argument("--sub-level", type=int, metavar="N",
+    p.add_argument("--sub-level", type=_sub_level, metavar="N|all",
                    help="for schematics holding Aeronautics ships: export ship N (0-based; default: the "
-                        "normal blocks, or the largest ship if there are none)")
+                        "normal blocks, or the largest ship if there are none). 'all': everything, the "
+                        "normal blocks and every ship placed where it was saved, attached or not (prints "
+                        "turn tilted ships to the nearest quarter turn; GLB keeps their angle)")
     p.add_argument("--preview-sub-levels", metavar="PNG",
                    help="write a picture of the schematic's Aeronautics sub-levels (numbered and coloured, "
                         "placed where they were saved) and exit")
@@ -78,7 +80,7 @@ def main(argv=None):
     p.add_argument("--solidify", type=float, default=0, metavar="BLOCKS",
                    help="fill the whole interior (fill air bubbles + seal off entrances): doorways and "
                         "windows up to this many blocks wide are sealed while filling (0 = off)")
-    p.add_argument("--min-piece-mm3", type=float, default=1.0, help="drop loose pieces smaller than this volume")
+    p.add_argument("--min-piece-mm3", type=float, default=1.0, help="no longer used (see --delete-floating); accepted so old commands still run")
     p.add_argument("--largest-only", action="store_true", help="keep only the largest connected piece")
     mw = p.add_argument_group("3D print options")
     mw.add_argument("--fill-bubbles", action="store_true", help="Fill air bubbles: fill enclosed air")
@@ -99,6 +101,12 @@ def main(argv=None):
     mw.add_argument("--no-lesser", action="store_true",
                     help="leave out lesser, detailed blocks (torches, levers, rails, plants...)")
     mw.add_argument("--fatten", action="store_true", help="Fatten lesser blocks: thin parts at least 2 px")
+    mw.add_argument("--snap-wheels", action="store_true",
+                    help="Offroad/Aeronautics wheels print as separate snap-on wheels that roll: the car gets "
+                         "peg axles with a snap head, each wheel a bore, laid flat beside the model")
+    mw.add_argument("--snap-full-size", action="store_true",
+                    help="with --snap-wheels: keep the wheels their in-game size; where the car is in the way "
+                         "they sit further out on their pegs instead of being made smaller")
     mw.add_argument("--y-up", action="store_true", help="keep Minecraft's Y up (default: Z up for printers)")
     mw.add_argument("--height-cm", type=float, default=0,
                     help="make the model this many cm tall (instead of --block-mm)")
@@ -181,6 +189,12 @@ def main(argv=None):
         structure = World(a.world, a.dimension).extract(a.corner1, a.corner2)
         default_name = os.path.basename(os.path.normpath(a.world)).replace(" ", "_") + "_region"
         moving = _region_contraptions(a)
+    elif a.schematic and a.sub_level == "all":
+        from .sublevels import place_all
+        structure, notes = place_all(a.schematic, a.contraptions, exact=(a.output or "").lower().endswith(".glb"))
+        for line in notes:
+            print(line)
+        default_name = os.path.splitext(os.path.basename(a.schematic))[0] + "_all"
     elif a.schematic:
         structure = load_structure(a.schematic, a.sub_level)
         moving = _schematic_contraptions(a, structure)
@@ -195,7 +209,7 @@ def main(argv=None):
         default_name = os.path.splitext(os.path.basename(a.schematic))[0]
     else:
         p.error("give a schematic, or --world with --from/--to or --ship")
-    if not structure.blocks:
+    if not structure.blocks and not getattr(structure, "moving", None):
         p.error("nothing but air there")
     if not a.output:
         a.output = default_name + ".stl"
@@ -216,19 +230,36 @@ def main(argv=None):
                              a.hollow_interior, a.interior)
     for line in notes:
         print(line)
+    for mp in getattr(structure, "moving", []):  # parts placed off the grid get the same clean-up
+        mp.structure, _ = clean(mp.structure, vox, not a.keep_backup_blocks, not a.keep_vs_blocks, a.missing,
+                                a.hollow_interior, a.interior)
     if moving and a.contraptions != "none":
         from .contraptions import attach
         found, to_local = moving
         glb = a.output.lower().endswith(".glb")
         for line in attach(structure, found, to_local, a.contraptions, exact=glb, separate=glb and a.rig_contraptions):
             print(line)
-    if not structure.blocks:
+    if not a.output.lower().endswith(".glb"):  # blocks whose turned state has no model keep their shape, turned
+        from .contraptions import keep_turned_shapes
+        keep_turned_shapes(structure, vox.assets)
+    if not structure.blocks and not getattr(structure, "moving", None):
         p.error("nothing left to export")
     filler = None
     if not a.output.lower().endswith(".glb"):
         structure, filler, cell_mm = print_prep(a, structure, vox, res, cell_mm)
         if not structure.blocks:
             p.error("nothing left to export")
+    wheels = []
+    if a.snap_wheels and not a.output.lower().endswith(".glb"):
+        from . import snapwheels
+        wheels = snapwheels.find_wheels(structure, vox.assets)
+        if not wheels:
+            print("Snap-on wheels: no Offroad wheel mounts with tires found")
+        vox.snap = {w.pos: w for w in wheels}
+        structure, dropped = snapwheels.without_hidden_blocks(structure, wheels, vox)
+        if dropped:
+            print(f"Snap-on wheels: left out {len(dropped)} block(s) hidden inside tires: "
+                  + ", ".join(sorted({st.name for *_, st in dropped})))
     with stage(0.25, 0.45, "Reading block shapes"):
         grid = vox.voxelize(structure)
 
@@ -239,6 +270,11 @@ def main(argv=None):
         builder.rig_rpm = a.rig_rpm
         with stage(0.45, 0.85, "Building model"):
             faces = builder.build(merge=a.merge)
+        from .blender import _groups
+        if not _groups(faces) and not any(_groups(pf) for _, pf in builder.parts):
+            p.error("nothing to draw: none of these blocks has faces"
+                    + (" (this schematic's ships are separate parts: pick one with --sub-level)"
+                       if getattr(structure, "skipped", None) else ""))
         if a.cull_interior:
             from .visibility import FILL_TEXTURE, Interior
             interior = Interior(vox, structure, max(1, a.solidify))
@@ -266,7 +302,7 @@ def main(argv=None):
         report(vox)
         return 0
     if not a.voxel:
-        export_exact(a, structure, vox, grid, res, cell_mm, t0, filler)
+        export_exact(a, structure, vox, grid, res, cell_mm, t0, filler, wheels)
         report(vox)
         return 0
 
@@ -275,12 +311,22 @@ def main(argv=None):
         grid = printprep.thicken(grid, math.ceil(a.min_thickness_mm / cell_mm))
     if a.hollow_mm > 0:
         grid = printprep.hollow(grid, max(1, math.ceil(a.hollow_mm / cell_mm)))
+    cell_units = 16 / res
+    off = np.asarray(vox.grid_offset)
+    if wheels:
+        bv, bt = mesh.surface(grid)
+        snapwheels.make_room(wheels, ((bv.astype(float) - off) * cell_units)[bt], a.block_mm / 16,
+                             shrink=not a.snap_full_size)
     grid = printprep.fix_nonmanifold(grid)
 
     verts, tris = mesh.surface(grid)
     verts, tris = mesh.add_meshes(verts, tris, vox.smooth_meshes)  # round parts such as tires
+    if wheels:
+        body = (verts.astype(float) - off) * cell_units
+        verts, tris = add_snap_wheels(wheels, body, tris, a.block_mm / 16)  # pegs stay round
+        verts = verts / cell_units + off
     verts = mesh.to_print_space(verts, cell_mm * UNITS[a.units], not a.y_up)
-    write_print(a.output, verts, tris)
+    write_print(a.output, verts, tris, a.units)
     size = verts.max(0) if len(verts) else np.zeros(3)
     print(f"Wrote {a.output}: {len(tris)} triangles, {size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} {a.units}, "
           f"{grid.sum() * cell_mm ** 3 / 1000:.1f} cm3 in {time.time() - t0:.1f}s")
@@ -290,11 +336,21 @@ def main(argv=None):
 UNITS = {"mm": 1.0, "cm": 0.1, "m": 0.001, "in": 1 / 25.4}
 
 
-def write_print(path, verts, tris):
-    if path.lower().endswith(".3mf"):
-        mesh.write_3mf(path, verts, tris)
+def write_print(path, verts, tris, units="mm"):
+    if path.lower().endswith(".3mf"):  # 3MF names its unit; STL has none (slicers assume mm)
+        mesh.write_3mf(path, verts, tris, {"mm": "millimeter", "cm": "centimeter", "m": "meter", "in": "inch"}[units])
     else:
         mesh.write_stl(path, verts, tris)
+
+
+def _sub_level(text):
+    """--sub-level: a ship number, or 'all'."""
+    if text.strip().lower() == "all":
+        return "all"
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("a ship number (0, 1, ...) or 'all'")
 
 
 def _safe_name(text):
@@ -361,10 +417,8 @@ def print_prep(a, structure, vox, res, cell_mm):
 
 
 def _subset(structure, blocks):
-    from .schematic import Structure
-    keep = {b[:3] for b in blocks}
-    return Structure(structure.size, blocks, {k: v for k, v in structure.block_data.items() if k in keep},
-                     structure.sub_levels, structure.merged, structure.skipped)
+    from .schematic import with_blocks
+    return with_blocks(structure, blocks)
 
 
 def with_filler(grid, filler, vox, res, pockets):
@@ -382,14 +436,14 @@ def with_filler(grid, filler, vox, res, pockets):
     return out
 
 
-def export_exact(a, structure, vox, grid, res, cell_mm, t0, filler=None):
+def export_exact(a, structure, vox, grid, res, cell_mm, t0, filler=None, wheels=()):
     """Write each block's exact model geometry; Filler blocks become boxes."""
     joined = grid.copy()  # tires count as solid when deciding what's connected
     for tris in vox.smooth_meshes:
         rasterize_mesh(joined, tris)
     filled = with_filler(joined, filler, vox, res, a.fill_bubbles)
     if a.hollow_mm > 0:
-        print("Note: --hollow-mm only applies with --voxel; use --hollow-bottom-mm  instead.")
+        print("Note: --hollow-mm only applies with --voxel; use --hollow-bottom-mm instead.")
 
     unit_mm = a.block_mm / 16
     # flat (zero-thickness) model elements always get 1 px so they print; more only on request
@@ -403,12 +457,58 @@ def export_exact(a, structure, vox, grid, res, cell_mm, t0, filler=None):
         expo = exposure(vox, structure, max(1, a.solidify))
     with stage(0.45, 0.95, "Building print model"):
         tris = assemble(structure, exact, joined, filled, None, 16 / res, expo)
-    verts = mesh.to_print_space(tris.reshape(-1, 3), unit_mm * UNITS[a.units], not a.y_up)
-    faces = np.arange(len(verts)).reshape(-1, 3)
-    write_print(a.output, verts, faces)
+    verts, faces = tris.reshape(-1, 3), np.arange(len(tris) * 3).reshape(-1, 3)
+    if wheels:
+        from . import snapwheels
+        snapwheels.make_room(wheels, tris, unit_mm, shrink=not a.snap_full_size)
+        verts, faces = add_snap_wheels(wheels, verts, faces, unit_mm)
+    verts = mesh.to_print_space(verts, unit_mm * UNITS[a.units], not a.y_up)
+    write_print(a.output, verts, faces, a.units)
     size = verts.max(0) if len(verts) else np.zeros(3)
     print(f"Wrote {a.output}: {len(faces)} triangles, {size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f} {a.units}, "
           f"about {filled.sum() * cell_mm ** 3 / 1000:.1f} cm3 in {time.time() - t0:.1f}s")
+
+
+def add_snap_wheels(wheels, verts, faces, unit_mm, pegs=True):
+    """--snap-wheels: add peg axles (unless already in the body) and each wheel, bored, lying
+    flat in a row beside the model. Call snapwheels.make_room first. verts in 1/16-block units;
+    returns (verts, faces)."""
+    from . import snapwheels
+    verts, faces = [np.asarray(verts, float)], [np.asarray(faces)]
+    count = len(verts[0])
+    if pegs:
+        for w in wheels:
+            t = snapwheels.peg_tris(w, unit_mm)
+            verts.append(t.reshape(-1, 3))
+            faces.append(np.arange(count, count + len(t) * 3).reshape(-1, 3))
+            count += len(t) * 3
+    body = np.concatenate(verts)
+    lo, hi = body.min(0), body.max(0)
+    gap = 3.0 / unit_mm  # 3 mm between parts
+    parts = [snapwheels.wheel_part(w, unit_mm) for w in wheels]
+    for v, f in snapwheels.laid_out(parts, lo[1], hi[0] + gap, lo[2] + max(float(np.ptp(p[0][:, 1])) for p in parts), gap):
+        verts.append(v)
+        faces.append(f + count)
+        count += len(v)
+    peg, bore = snapwheels.sizes(wheels[0], unit_mm)
+    lip, slot = snapwheels.snap(wheels[0], unit_mm)
+    ground = min(float(w.centre @ w.up) - w.radius for w in wheels)  # where the wheels touch down
+    low = (ground - float(lo[1])) * unit_mm
+    fitted = []  # what make_room did
+    if max(w.cut for w in wheels) * unit_mm > 0.05:
+        fitted.append(f"trimmed up to {max(w.cut for w in wheels) * unit_mm:.1f} mm on the inside")
+    if min(w.scale for w in wheels) < 0.995:
+        fitted.append(f"made {(1 - min(w.scale for w in wheels)) * 100:.0f}% smaller across")
+    if max(w.moved for w in wheels) * unit_mm > 0.05:
+        fitted.append(f"moved up to {max(w.moved for w in wheels) * unit_mm:.1f} mm out")
+    print(f"Snap-on wheels: {len(wheels)} wheel(s) beside the model; pegs {2 * peg * unit_mm:.1f} mm "
+          + (f"(split by a {slot:.1f} mm slot)" if slot else "(solid: too thin to split, so a small snap lip)")
+          + f", bores {2 * bore * unit_mm:.1f} mm across, wheels {2 * wheels[0].radius * unit_mm:.1f} mm"
+          + ("; to clear the car, wheels " + ", ".join(fitted) if fitted else ""))
+    if low > 0.05:
+        print(f"Snap-on wheels: note: the car's underside hangs {low:.1f} mm below the wheels, so it will rest on "
+              f"that rather than roll")
+    return np.concatenate(verts), np.concatenate(faces)
 
 
 class _Fattened:

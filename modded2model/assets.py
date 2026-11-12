@@ -437,6 +437,11 @@ class Assets:
                 if _variant_matches(key, props):
                     picks.append(value)
                     break
+            else:  # saved by an older mod version without a newer property: ignore what it lacks
+                for key, value in bs["variants"].items():
+                    if _variant_matches(key, props, ignore_missing=True):
+                        picks.append(value)
+                        break
         for part in bs.get("multipart", []):
             if "when" not in part or _when_matches(part["when"], props):
                 picks.append(part["apply"])
@@ -450,11 +455,13 @@ class Assets:
         return out
 
 
-def _variant_matches(key, props):
+def _variant_matches(key, props, ignore_missing=False):
     if key in ("", "normal"):
         return True
     for cond in key.split(","):
         k, _, v = cond.partition("=")
+        if ignore_missing and k not in props:
+            continue
         if props.get(k) != v:
             return False
     return True

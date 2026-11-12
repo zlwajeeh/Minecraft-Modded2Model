@@ -249,7 +249,11 @@ def _edge_pieces(corners, uv):
 
 
 def _ct_uvs(uvs, col, row, n):
-    """Move 0..16 face UVs into tile (col, row) of an n x n connected sheet."""
+    """Move 0..16 face UVs into tile (col, row) of an n x n connected sheet (or a Big Cannons
+    sheet: the texture stacked four times, n = ("cannon", width ratio, height ratio))."""
+    if isinstance(n, tuple):
+        _, rw, rh = n
+        return [(u * rw, v * rh + row * 4) for u, v in uvs]
     return [((col * 16 + u) / n, (row * 16 + v) / n) for u, v in uvs]
 
 
@@ -309,6 +313,7 @@ class TexturedBuilder:
             return np.take(shape, last, axis=axis).astype(np.uint8).tobytes()  # outline touching that side
 
         self.ct = ConnectedTextures(self.assets, identity, self.full, copycats, face_mask)
+        self.ct.states, self.ct.data = states, structure.block_data or {}
         self.states = {(int(k[0]), int(k[1]), int(k[2])): v for k, v in states.items()}
 
     # --- model elements -------------------------------------------------------------
@@ -397,8 +402,9 @@ class TexturedBuilder:
             if not mat or mat.get("Name") in (None, "minecraft:air"):
                 mat = {"Name": "create:copycat_base"}
             texs = self._material_textures(mat)
-            if block_name in codeshapes.RULE_TEXTURES:  # not a copycat (e.g. fluid pipe): its own texture
-                texs = {d: codeshapes.RULE_TEXTURES[block_name] for d in DIRS}
+            own = codeshapes.rule_texture(block_name)  # not a copycat (a fluid pipe, a bed): its own texture
+            if own:
+                texs = {d: own for d in DIRS}
             lo, hi = np.array(b[:3], float), np.array(b[3:6], float)
             for face in DIRS:
                 corners = np.asarray(_corners(face, lo, hi), float) + shift
@@ -519,6 +525,24 @@ class TexturedBuilder:
                 self._add_model_obj(model, m, shift)
             for part in codeshapes.extra_by_model(model.get("id"), assets):
                 self.add_elements(part["elements"], part["textures"], m, shift, pos, tint, model["textures"])
+        if resolved and not any(m["elements"] or m.get("mesh") is not None for m, _, _ in resolved):
+            boxes = codeshapes.fallback_boxes(st)  # drawn by code in game (beds, chests, signs, banners)
+            if boxes:
+                self.add_boxes(boxes, None, shift, pos, name)
+                return
+        # parts picked by the block's properties and neighbours; a pipe junction has nothing else
+        for mid in codeshapes.property_parts(st):
+            part = assets.model(mid)
+            if part:
+                self.add_elements(part["elements"], part["textures"], np.eye(3), shift, pos, tint)
+        if name in codeshapes.ATTACHMENT_BLOCKS:
+            def nb(side, p=pos):
+                d = codeshapes.PIPE_DIRS[side]
+                return self.states.get((p[0] + d[0], p[1] + d[1], p[2] + d[2]))
+            for mid in codeshapes.pipe_attachments(st, nb):
+                part = assets.model(mid)
+                if part:
+                    self.add_elements(part["elements"], part["textures"], np.eye(3), shift, pos, tint)
         if resolved:
             m = _blockstate_matrix(resolved[0][1], resolved[0][2])
             extra_ids = codeshapes.extra_models(name) + codeshapes.state_extra_models(st)
@@ -528,18 +552,6 @@ class TexturedBuilder:
                 extra = assets.model(mid)
                 if extra:
                     self.add_elements(extra["elements"], extra["textures"], me, shift, pos, tint, base_textures)
-            for mid in codeshapes.property_parts(st):
-                part = assets.model(mid)
-                if part:
-                    self.add_elements(part["elements"], part["textures"], np.eye(3), shift, pos, tint)
-            if name in codeshapes.ATTACHMENT_BLOCKS:
-                def nb(side, p=pos):
-                    d = codeshapes.PIPE_DIRS[side]
-                    return self.states.get((p[0] + d[0], p[1] + d[1], p[2] + d[2]))
-                for mid in codeshapes.pipe_attachments(st, nb):
-                    part = assets.model(mid)
-                    if part:
-                        self.add_elements(part["elements"], part["textures"], np.eye(3), shift, pos, tint)
             for mid, rot in codeshapes.kinetic_shafts(st):
                 part = assets.model(mid)
                 if part:
@@ -683,7 +695,7 @@ class TexturedBuilder:
                 if bearing in self.kinetic:
                     moving.rpm = self.kinetic[bearing][1]
         for moving in getattr(self.structure, "moving", []):
-            if self.separate_moving:
+            if self.separate_moving and not moving.static:
                 sub = TexturedBuilder(self.vox, moving.structure).build(merge=merge)
                 self.parts.append((moving, sub))
             else:

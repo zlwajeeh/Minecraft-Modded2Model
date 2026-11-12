@@ -75,12 +75,13 @@ def write_stl(path, verts, tris):
         f.write(rec.tobytes())
 
 
-def write_3mf(path, verts, tris):
+def write_3mf(path, verts, tris, unit="millimeter"):
+    """unit: what the coordinates are in (millimeter, centimeter, meter or inch)."""
     vs = "".join(f'<vertex x="{x:.4f}" y="{y:.4f}" z="{z:.4f}"/>' for x, y, z in verts)
     ts = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in tris)
     model = (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+        f'<model unit="{unit}" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
         f'<resources><object id="1" type="model"><mesh><vertices>{vs}</vertices>'
         f'<triangles>{ts}</triangles></mesh></object></resources>'
         '<build><item objectid="1"/></build></model>'

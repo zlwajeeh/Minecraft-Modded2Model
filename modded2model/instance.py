@@ -74,7 +74,7 @@ def find_schematic(instance, name):
 
 def list_schematics(instance):
     d = os.path.join(_game_dir(instance), "schematics")
-    return sorted(f[:-4] for f in os.listdir(d) if f.endswith(".nbt"))
+    return sorted(f[:-4] for f in os.listdir(d) if f.endswith(".nbt")) if os.path.isdir(d) else []
 
 
 def find_world(instance, name):
@@ -88,4 +88,6 @@ def find_world(instance, name):
 
 def list_worlds(instance):
     d = os.path.join(_game_dir(instance), "saves")
+    if not os.path.isdir(d):
+        return []
     return sorted(w for w in os.listdir(d) if os.path.isfile(os.path.join(d, w, "level.dat")))

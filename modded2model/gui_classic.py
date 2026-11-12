@@ -12,6 +12,7 @@ from .gui import DEFAULT_INSTANCE, MAIN_PART, load_settings
 
 
 class ClassicApp(gui.App):
+    offer_all_parts = True  # "Everything" in the part list: every sub-level, attached or not
     def __init__(self):
         tk.Tk.__init__(self)
         self.title(f"Minecraft-Modded2Model v{__version__}")
@@ -105,7 +106,8 @@ class ClassicApp(gui.App):
         self.part_box = ttk.Combobox(sch, textvariable=self.part_var, values=[MAIN_PART], state="readonly")
         self.part_box.pack(fill="x")
         self.part_box.bind("<<ComboboxSelected>>", lambda e: self.refresh_preview())
-        ttk.Label(sch, text="Aeronautics sub-levels are listed here; the preview shows which is which.",
+        ttk.Label(sch, text="Aeronautics sub-levels are listed here; the preview shows which is which. "
+                           "\u201cEverything\u201d exports them all, attached or not.",
                   style="Hint.TLabel", wraplength=420).pack(anchor="w", pady=(2, 0))
 
         # World region
@@ -335,8 +337,15 @@ class ClassicApp(gui.App):
         self._deps.append((self.hollowb_var, [he, sup]))
 
         f = line()
-        self.melt_var, cb = flag(f, "melt_snow", "Melt snow blocks (useful with fill, seal and hollow)", False)
+        self.melt_var, cb = flag(f, "melt_snow", "Melt snow blocks", False)
         cb.pack(side="left")
+        # wheels print on their own and snap onto peg axles, so the printed car rolls
+        self.snap_var, cb = flag(f, "snap_wheels", "Snap-on rolling wheels (printed separately)", False)
+        cb.pack(side="left", padx=(12, 0))
+        # where the car is in a wheel's way: shrink the wheels (default), or keep them full size
+        self.snap_full_var, full = flag(f, "snap_full_size", "Full size", False)
+        full.pack(side="left", padx=(6, 0))
+        self._deps.append((self.snap_var, [full]))
 
         f = line()
         ttk.Label(f, text="Non-solid blocks inside (cogs, gearboxes...):").pack(side="left")

@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from . import nbt
 
 AIR = {"minecraft:air", "minecraft:cave_air", "minecraft:void_air", "minecraft:structure_void"}
+# Fluids aren't part of a build: a ship saved afloat brings the water around it along. They are
+# left out of every export (an override, {"minecraft:water": "full"}, brings them back).
+FLUIDS = {"minecraft:water", "minecraft:lava", "minecraft:bubble_column"}
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,17 @@ class Structure:
     skipped: list = field(default_factory=list)  # rotated sub_levels left out
 
 
+def with_blocks(structure, blocks):
+    """A copy of a structure holding only `blocks` (and their block data); everything else a
+    loader or an earlier step put on it (sub-levels, moving parts, grid shift...) is kept."""
+    keep = {b[:3] for b in blocks}
+    out = Structure(structure.size, list(blocks), {k: v for k, v in structure.block_data.items() if k in keep})
+    for k, v in vars(structure).items():
+        if k not in ("size", "blocks", "block_data"):
+            setattr(out, k, v)
+    return out
+
+
 def _parse(root):
     palettes = root.get("palettes")
     palette = palettes[0] if palettes else root.get("palette", [])
@@ -55,12 +69,13 @@ def _parse(root):
     return s
 
 
-def load_structure(path, sub_level=None, merge_sub_levels=True):
+def load_structure(path, sub_level=None, merge_sub_levels=True, pick_ship=True):
     """Load a schematic.
 
     sub_level=None: the normal blocks (plus any unrotated ships attached to them, merged onto
     the grid), or, if the file holds only Aeronautics ships, the largest ship.
     sub_level=N: ship N (0-based). The result's .sub_levels lists every ship.
+    pick_ship=False: the main build even when it holds no blocks (sublevels.place_all).
     """
     root = nbt.load(path)
     main = _parse(root)
@@ -71,7 +86,7 @@ def load_structure(path, sub_level=None, merge_sub_levels=True):
         chosen = main.sub_levels[sub_level]
         chosen.sub_levels = main.sub_levels
         return chosen
-    if not main.blocks and main.sub_levels:
+    if pick_ship and main.sub_levels and all(b[3].name in FLUIDS for b in main.blocks):  # only ships (and maybe water)
         chosen = max(main.sub_levels, key=lambda s: len(s.blocks))
         chosen.sub_levels = main.sub_levels
         return chosen
@@ -111,11 +126,14 @@ def _merge_aligned(main, raw_levels):
     main.grid_shift = tuple(shift)  # schematic coordinates -> this structure's grid
     taken = {b[:3] for b in blocks}
     for o, sl in placed:
+        added = set()
         for x, y, z, st in sl.blocks:
             q = mv(x, y, z, o)
             if q not in taken:
                 blocks.append((*q, st))
                 taken.add(q)
-        data.update({mv(*k, o): v for k, v in sl.block_data.items()})
+                added.add(q)
+        # only for the blocks that were placed: where the build already has a block, its data stays
+        data.update({q: v for q, v in ((mv(*k, o), v) for k, v in sl.block_data.items()) if q in added})
     main.blocks, main.block_data = blocks, data
     main.size = tuple(max(main.size[k], hi[k] + shift[k] + 1) for k in range(3))

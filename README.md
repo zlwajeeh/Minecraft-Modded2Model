@@ -130,6 +130,7 @@ on whole blocks, in this order:
 | Delete floating objects smaller than N | `--delete-floating N` | removes small loose parts and trees |
 | Hollow out bottom, wall N mm, Superhollow | `--hollow-bottom-mm N`, `--superhollow` | hollows from the bottom up |
 | Melt snow blocks | `--melt-snow` | removes snow blocks after the steps above |
+| Snap-on rolling wheels | `--snap-wheels` | Offroad/Aeronautics wheels print separately, lying flat beside the model, each with a bore; the car gets peg axles with a collar and a split snap head (two prongs that squeeze together as the wheel goes on), so pushed-on wheels roll (Lego style). Where the car is in a wheel's way, the wheel is fitted rather than moved: blocks and hub parts hidden inside a tire are left out, the wheel's inner side is trimmed where it was tucked into the car, and wheels that clip into the blocks beside them (fenders) are made a little smaller, all four alike. Only when that isn't enough does a wheel move out along its peg. The export log says what was done. `--snap-full-size` (window: "Full size") keeps the wheels their in-game size: they sit further out on their pegs instead of being made smaller |
 | Export lesser, detailed blocks / Fatten | (default; `--no-lesser`), `--fatten` | keeps small detail blocks (handles, levers, shafts...); fatten makes their thin parts at least 2 px |
 
 Extras: `--min-thickness-mm` (thicken thin parts everywhere), `--voxel` (blocky export).
@@ -161,7 +162,15 @@ axle and hub, so wheels print attached to the vehicle.
 
 Other options: `--res` (voxels per block, 16 = full detail), `--max-cells`. Output `.stl` or `.3mf`.
 
-Blocks drawn by code instead of model files are reported at the end and drawn as full cubes.
+Water, lava and bubble columns are left out of every export: a ship saved afloat brings the water
+around it along. (`{"minecraft:water": "full"}` in an overrides file brings water back as solid blocks.)
+A schematic whose only normal blocks are water exports its largest Aeronautics ship instead.
+
+Beds, chests, signs and banners are drawn by code in the game (their model files are empty), so
+they get simple stand-in shapes: a mattress on legs, a chest body, a board on a post, a hanging
+cloth. In GLB they take the wool or planks texture that matches their name.
+
+Other blocks drawn by code instead of model files are reported at the end and drawn as full cubes.
 Give them shapes with `--overrides overrides.json`:
 
 ```json
@@ -194,6 +203,11 @@ and a numbered thumbnail per sub-level. Pick one in the window's "Export" box, o
 `--sub-level N`. Unrotated sub-levels (things held by a sticker or piston) are merged into the main
 export automatically.
 
+To export everything at once, attached or not, pick "Everything" in the classic window's part list,
+or pass `--sub-level all`: the main build plus every sub-level, each placed where it was saved. GLB
+keeps each ship at its exact angle. Prints are built on the block grid, so a tilted ship is turned
+to the nearest quarter turn; the log says by how much.
+
 ## Moving contraptions (bearings, propellers, windmills)
 
 While a bearing is turning, the blocks it carries are saved inside a Create contraption entity, not
@@ -202,7 +216,8 @@ their bearing (`modded2model/contraptions.py`). `--contraptions` (window: Clean-
 
 - `world` (default): at the angle they were saved at. GLB exports turn the meshes to that exact
   angle; prints snap to the nearest quarter turn, since a print is built on the block grid.
-- `snap`: the nearest quarter turn, so every block stays on the grid.
+- `snap`: the nearest quarter turn, so every block stays on the grid. Blocks that have no state
+  for the way they end up (stairs lying on their side) keep their own shape, turned.
 - `assembled`: as built (angle 0).
 - `none`: leave them out.
 

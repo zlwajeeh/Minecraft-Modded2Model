@@ -62,6 +62,30 @@ def run(inst):
         print(f"{tris} triangles, {bad} bad edges")
         assert bad == 0
 
+        # Snap-on wheels: four separate wheels and four peg axles, closed meshes in both modes,
+        # and the wheels stay near where they are in game (trimmed or shrunk, not pushed far out).
+        import contextlib
+        import io
+        from modded2model import snapwheels
+        for extra in ([], ["--voxel"]):
+            out = os.path.join(d, "snap.stl")
+            log = io.StringIO()
+            with contextlib.redirect_stdout(log):
+                main([NAME, "--instance", inst, "-o", out, "--snap-wheels"] + extra)
+            line = next(ln for ln in log.getvalue().splitlines() if ln.startswith("Snap-on wheels: 4 wheel(s)"))
+            print(line)
+            assert "moved" not in line, "wheels pushed out instead of fitted"
+            tris, bad = check_watertight(out)
+            assert bad == 0, f"snap-on wheel export not watertight ({extra})"
+        wheels = snapwheels.find_wheels(structure, vox.assets)
+        assert len(wheels) == 4
+        for w in wheels:  # each wheel on its own: a closed solid with a bore right through
+            v, f = snapwheels.wheel_part(w, 5 / 16)
+            assert abs(v[:, :2]).max() <= w.radius + 1 and len(f) > 100
+            peg, bore = snapwheels.sizes(w, 5 / 16)
+            near_axis = np.hypot(v[:, 0], v[:, 1]) < bore - 0.3
+            assert not near_axis.any(), "bore not cut through the wheel"
+
 
 if __name__ == "__main__":
     inst = sys.argv[1] if len(sys.argv) > 1 else DEFAULT

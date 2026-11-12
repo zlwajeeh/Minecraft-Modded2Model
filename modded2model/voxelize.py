@@ -118,6 +118,7 @@ class Voxelizer:
         self.no_geometry = set()  # blocks whose models have no elements (rendered by code)
         self.smooth_meshes = []  # closed meshes kept as triangles, in grid cell units
         self.grid_offset = np.zeros(3, int)  # cells the grid was padded by at the low end
+        self.snap = {}  # snap-on wheels: wheel mount position -> snapwheels.Wheel (tires left out)
 
     def block_shape(self, state):
         from .attachments import HANDLERS
@@ -126,7 +127,15 @@ class Voxelizer:
         res = self.res
         shape = np.zeros((res, res, res), bool)
         ov = self.overrides.get(state.name)
-        if ov == "skip":
+        from .contraptions import turn_matrix
+        turn = turn_matrix(state)
+        if turn:  # a contraption block whose turned state has no model: its own shape, turned
+            base, m = turn
+            cells = np.argwhere(self.block_shape(base))
+            c = (res - 1) / 2
+            q = np.rint((cells - c) @ m.T + c).astype(int)
+            shape[q[:, 0], q[:, 1], q[:, 2]] = True
+        elif ov == "skip":
             pass
         elif ov == "full":
             shape[:] = True
@@ -181,11 +190,6 @@ class Voxelizer:
                     me = m if fy is None or not extra_ids else _blockstate_matrix(0, fy)
                     if not extra_ids and state.name not in HANDLERS:  # parts only the item model shows (blades, shafts, handles)
                         extra_els = self.assets.item_extra_elements(state.name, codeshapes.item_extras_allowed(state.name))
-                    for mid in codeshapes.property_parts(state):
-                        for el in (self.assets.model(mid) or {}).get("elements", []):
-                            c = _element_cells(el, np.eye(3), res)
-                            if len(c):
-                                shape[c[:, 0], c[:, 1], c[:, 2]] = True
                     for mid, rot in codeshapes.kinetic_shafts(state):
                         mk = _blockstate_matrix(*rot)
                         for el in (self.assets.model(mid) or {}).get("elements", []):
@@ -202,9 +206,19 @@ class Voxelizer:
                             c = _element_cells(el, me, res)
                             if len(c):
                                 shape[c[:, 0], c[:, 1], c[:, 2]] = True
-                if not any_el and not codeshapes.empty_by_design(state):
-                    self.no_geometry.add(state.name)
-                    shape[:] = True
+                # parts picked by the block's properties (a pipe junction has no blockstate part)
+                for mid in codeshapes.property_parts(state):
+                    for el in (self.assets.model(mid) or {}).get("elements", []):
+                        c = _element_cells(el, np.eye(3), res)
+                        if len(c):
+                            shape[c[:, 0], c[:, 1], c[:, 2]] = True
+                if not any_el and not shape.any() and not codeshapes.empty_by_design(state, parts):
+                    boxes = codeshapes.fallback_boxes(state)  # drawn by code in game: a stand-in shape
+                    if boxes:
+                        self._fill_boxes(shape, boxes)
+                    else:
+                        self.no_geometry.add(state.name)
+                        shape[:] = True
         self._shape_cache[state] = shape
         return shape
 
@@ -239,6 +253,10 @@ class Voxelizer:
             if handler:
                 vox_tris, smooth_tris = handler(state, structure.block_data.get((x, y, z)), self.assets)
                 shift = np.array([x, y, z], float) * 16
+                if (x, y, z) in self.snap:  # the tire prints separately, on a peg
+                    from .snapwheels import clear_mount_parts
+                    vox_tris = clear_mount_parts(vox_tris + shift, self.snap[(x, y, z)]) - shift
+                    smooth_tris = smooth_tris[:0]
                 if len(vox_tris):
                     meshes.append(vox_tris + shift)
                 if len(smooth_tris):

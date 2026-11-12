@@ -10,6 +10,13 @@ read from Create's own classes (AllCTTypes.getTextureIndex, ConnectedTextureBeha
 - a neighbour connects when it is the same block and no full block covers it on that side.
 - sheet size picks the type: 8x8 OMNIDIRECTIONAL, 4x4 RECTANGLE, 2x2 HORIZONTAL.
 Used by Create, Steam 'n' Rails, Design n' Decor, Create Deco and other Create addons.
+
+Create Big Cannons has its own type (CBCCTTypes.CANNON, CBCSpriteShifts): barrel, chamber and
+breech sides join only along the cannon. The sheet is the plain texture stacked four times, a
+quarter of the sheet's height apart: row 0 joined up only, 1 both ways, 2 down only, 3 neither.
+"Up" is the positive end of the block's facing axis (the negative end on DOWN faces), and a
+neighbour joins when it is the same block on that axis and the block's saved Connections say so
+(BuiltUpCannonCTBehavior.connectsTo).
 """
 DIRS = {"north": (0, 0, -1), "south": (0, 0, 1), "west": (-1, 0, 0), "east": (1, 0, 0),
         "up": (0, 1, 0), "down": (0, -1, 0)}
@@ -93,6 +100,8 @@ class ConnectedTextures:
         self.copycat = copycat or set()
         self.face_mask = face_mask
         self._sheets = {}
+        self.states = {}  # (x, y, z) -> BlockState and saved data, for Big Cannons sheets
+        self.data = {}
 
     def _faces_match(self, a, b):
         """Copycats+ faceMatch between neighbouring blocks a and b (b next to a on one side)."""
@@ -119,16 +128,20 @@ class ConnectedTextures:
             if png and base:
                 import io
                 from PIL import Image
-                cw = Image.open(io.BytesIO(self.assets.raw_texture(ct))).size[0]
-                bw = Image.open(io.BytesIO(base[0])).size[0]
+                cw, ch = Image.open(io.BytesIO(self.assets.raw_texture(ct))).size
+                bw, bh = Image.open(io.BytesIO(base[0])).size
                 n = cw // bw if bw else 0
-                if n in TYPES:
+                if texture.startswith("createbigcannons:") and cw and ch:
+                    result = (ct, ("cannon", bw / cw, bh / ch))
+                elif n in TYPES:
                     result = (ct, n)
         self._sheets[texture] = result
         return result
 
     def tile(self, pos, face, n):
         """Tile (column, row) on an n x n sheet for the face of the block at pos."""
+        if isinstance(n, tuple):
+            return 0, self._cannon_row(pos, face)
         me = self.identity.get(pos)
         h, v = face_axes(face)
         dh, dv, df = DIRS[h], DIRS[v], DIRS[face]
@@ -158,3 +171,26 @@ class ConnectedTextures:
         c["bottomRight"] = c["down"] and c["right"] and test(1, -1)
         index = TYPES[n](c)
         return index % n, index // n
+
+    def _cannon_row(self, pos, face):
+        st = self.states.get(pos)
+        axis = {"north": 2, "south": 2, "east": 0, "west": 0, "up": 1, "down": 1}.get(
+            (st.properties.get("facing") if st else None) or "up", 1)
+        step = [0, 0, 0]
+        step[axis] = -1 if face == "down" else 1
+
+        def joined(sign):
+            q = tuple(p + sign * s for p, s in zip(pos, step))
+            other = self.states.get(q)
+            if st is None or other is None or other.name != st.name:
+                return False
+            if {"north": 2, "south": 2, "east": 0, "west": 0, "up": 1, "down": 1}.get(
+                    other.properties.get("facing") or "up", 1) != axis:
+                return False
+            saved = (self.data.get(pos) or {}).get("Connections")
+            if saved is None:
+                return True
+            d = {v: k for k, v in DIRS.items()}[tuple(sign * s for s in step)]
+            return d in [str(c).lower() for c in saved]
+        up, down = joined(1), joined(-1)
+        return ((1 if up == down else 0) + (0 if up else 2))

@@ -58,7 +58,11 @@ class ExactModels:
             return self._cache[state]
         assets, ov = self.vox.assets, self.vox.overrides.get(state.name)
         parts = []
-        if ov == "skip":
+        from .contraptions import turn_matrix
+        turn = turn_matrix(state)
+        if turn:  # a contraption block whose turned state has no model: its own model, turned
+            parts = [_rotated(self.block_tris(turn[0]), turn[1])]
+        elif ov == "skip":
             pass
         elif ov == "full":
             parts = [element_tris(FULL_BOX)]
@@ -93,10 +97,6 @@ class ExactModels:
                         extra = assets.model(mid)
                         if extra is not None:
                             parts += self._model(extra, me)
-                    for mid in codeshapes.property_parts(state):
-                        part = assets.model(mid)
-                        if part is not None:
-                            parts += self._model(part, np.eye(3))
                     for mid, rot in codeshapes.kinetic_shafts(state):
                         part = assets.model(mid)
                         if part is not None:
@@ -111,8 +111,15 @@ class ExactModels:
                             parts += self._model(part, _blockstate_matrix(*rot))
                     if not extra_ids and state.name not in HANDLERS:  # parts only the item model shows (blades, shafts, handles)
                         parts += self._model({"elements": assets.item_extra_elements(state.name, codeshapes.item_extras_allowed(state.name))}, m)
-            if not parts and state.name not in codeshapes.JAR_MODELS:  # unknown block or drawn by code: same stand-in as the voxel path
-                parts = [element_tris(FULL_BOX)]
+                for mid in codeshapes.property_parts(state):  # also where no blockstate part applies
+                    part = assets.model(mid)
+                    if part is not None:
+                        parts += self._model(part, np.eye(3))
+            if not parts and state.name not in codeshapes.JAR_MODELS \
+                    and not codeshapes.empty_by_design(state, resolved):
+                # unknown block or drawn by code: same stand-in as the voxel path
+                boxes = codeshapes.fallback_boxes(state) if resolved is not None else None
+                parts = self._boxes(boxes) if boxes else [element_tris(FULL_BOX)]
         parts = [p for p in parts if len(p)]
         tris = np.concatenate(parts) if parts else np.zeros((0, 3, 3))
         self._cache[state] = tris
@@ -125,35 +132,6 @@ def _filler_boxes(cells):
     boxes = []
     if not cells.any():
         return boxes
-    nx, ny, nz = cells.shape
-    open_ = {}  # (y0, y1, z0, z1) -> x where the box started
-    for x in range(nx + 1):
-        rects = set()
-        if x < nx:
-            runs = {}  # (z0, z1) -> list of y
-            for y in range(ny):
-                row = cells[x, y]
-                if not row.any():
-                    continue
-                d = np.diff(np.concatenate([[0], row.astype(np.int8), [0]]))
-                for z0, z1 in zip(np.flatnonzero(d == 1), np.flatnonzero(d == -1)):
-                    runs.setdefault((z0, z1), []).append(y)
-            for (z0, z1), ys in runs.items():
-                start = prev = ys[0]
-                for y in ys[1:] + [None]:
-                    if y is not None and y == prev + 1:
-                        prev = y
-                        continue
-                    rects.add((start, prev + 1, z0, z1))
-                    if y is not None:
-                        start = prev = y
-        for r in list(open_):
-            if r not in rects:
-                y0, y1, z0, z1 = r
-                boxes.append((open_.pop(r), y0, z0, x, y1, z1))
-        for r in rects:
-            open_.setdefault(r, x)
-    return boxes
     nx, ny, nz = cells.shape
     for x in range(nx):
         runs = {}  # (z0, z1) -> list of y
@@ -283,6 +261,11 @@ def assemble(structure, exact, grid, filled, keep_cells, cell_units, expo=None):
         handler = HANDLERS.get(st.name)
         if handler:
             vox_tris, smooth_tris = handler(st, structure.block_data.get((x, y, z)), vox.assets)
+            if (x, y, z) in vox.snap:  # snap-on wheels: the tire prints separately, on a peg
+                from .snapwheels import clear_mount_parts
+                shift = np.array([x, y, z], float) * 16
+                vox_tris = clear_mount_parts(vox_tris + shift, vox.snap[(x, y, z)]) - shift
+                smooth_tris = smooth_tris[:0]
             for t in (vox_tris, smooth_tris):
                 if len(t):
                     out.append(t + np.array([x, y, z], float) * 16)

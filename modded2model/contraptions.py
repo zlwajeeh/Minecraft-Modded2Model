@@ -262,6 +262,37 @@ def placed(c, angle):
     return blocks, data
 
 
+TURN = "__turn"  # block state property: the block is its own model turned by this matrix
+
+
+def turn_matrix(state):
+    """(state without the turn, 3x3 int matrix) for a state marked by keep_turned_shapes, else None."""
+    for k, v in state.props:
+        if k == TURN:
+            m = np.array([int(n) for n in v.split(",")]).reshape(3, 3)
+            return BlockState(state.name, tuple(kv for kv in state.props if kv[0] != TURN)), m
+    return None
+
+
+def keep_turned_shapes(structure, assets):
+    """After attach, for exports on the grid: a block turned with its contraption gets a turned
+    block state (rotate_state), but not every turn has one: stairs lying on their side, for one.
+    Where the turned state matches none of the block's models, the block keeps its original
+    state, marked with the turn, and its shape is turned instead (Voxelizer, ExactModels)."""
+    turned = getattr(structure, "turned", None)
+    if not turned:
+        return 0
+    n = 0
+    for i, (x, y, z, st) in enumerate(structure.blocks):
+        if (x, y, z) in turned and assets.resolve(st) == []:
+            original, m = turned[(x, y, z)]
+            if assets.resolve(original):
+                mark = (TURN, ",".join(str(int(v)) for v in m.ravel()))
+                structure.blocks[i] = (x, y, z, BlockState(original.name, tuple(sorted(original.props + (mark,)))))
+                n += 1
+    return n
+
+
 @dataclass
 class MovingPart:
     """A contraption to be drawn at an angle off the grid (GLB): its blocks in their own grid,
@@ -276,6 +307,7 @@ class MovingPart:
     type: str = ""  # Contraption.Type (flaps swing rather than spin)
     facing: str = ""  # the bearing's facing
     rpm: float = None  # rig: the bearing's speed, if its kinetic network is known
+    static: bool = False  # placed at an angle but never turning (a ship placed where it was saved)
 
 
 def attach(structure, contraptions, to_local, mode="world", exact=False, separate=False):
@@ -283,7 +315,7 @@ def attach(structure, contraptions, to_local, mode="world", exact=False, separat
     exact: True for GLB, where mode "world" keeps the precise angle as a MovingPart; otherwise
     every contraption is snapped onto the grid. separate (GLB rig): every contraption becomes a
     MovingPart, even on the grid, so it can be its own object. Grows the structure to fit."""
-    notes, extra, extra_data, moving = [], [], {}, []
+    notes, extra, extra_data, moving, turned = [], [], {}, [], {}
     for c in contraptions:
         angle = angle_for(c, mode)
         off_grid = abs(angle - round(angle / 90) * 90) > 0.01
@@ -302,6 +334,10 @@ def attach(structure, contraptions, to_local, mode="world", exact=False, separat
         if off_grid:
             angle = round(angle / 90) * 90
         blocks, data = placed(c, angle)
+        turn = np.rint(_rot_matrix(c.axis, angle)).astype(int)
+        if not (turn == np.eye(3, dtype=int)).all():  # remember how each block was before the turn
+            for b, (*_, original) in zip(blocks, c.blocks):
+                turned[to_local(b[:3])] = (original, turn)
         extra += [(*to_local(b[:3]), b[3]) for b in blocks]
         extra_data.update({to_local(p): d for p, d in data.items()})
         notes.append(f"Moving contraption ({c.kind}, {len(c.blocks)} blocks) placed at {angle:.0f} degrees"
@@ -323,11 +359,14 @@ def attach(structure, contraptions, to_local, mode="world", exact=False, separat
             mp.offset = tuple(o + s for o, s in zip(mp.offset, shift))
             mp.center = tuple(o + s for o, s in zip(mp.center, shift))
     taken = {b[:3] for b in structure.blocks}
+    kept_turns = structure.turned = dict(getattr(structure, "turned", {}))
     for x, y, z, st in extra:
         p = (x + int(shift[0]), y + int(shift[1]), z + int(shift[2]))
         if p not in taken:  # a contraption never overlaps the build in game; keep the build if it does here
             structure.blocks.append((*p, st))
             taken.add(p)
+            if (x, y, z) in turned:
+                kept_turns[p] = turned[(x, y, z)]
     for (x, y, z), d in extra_data.items():
         structure.block_data[(x + int(shift[0]), y + int(shift[1]), z + int(shift[2]))] = d
     for mp in moving:

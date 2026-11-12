@@ -78,5 +78,24 @@ if __name__ == "__main__":
         print(f"Edge check: {n} triangles, {bad} bad edges")
         assert bad == 0, "mesh is not watertight"
         main(args[:4] + [os.path.join(d, "b.3mf")] + args[5:])
-        assert zipfile.ZipFile(os.path.join(d, "b.3mf")).read("3D/3dmodel.model")
+        assert b'unit="millimeter"' in zipfile.ZipFile(os.path.join(d, "b.3mf")).read("3D/3dmodel.model")
+        # a 3MF names its unit: it has to follow --units, or the model loads at the wrong size
+        main(args[:4] + [os.path.join(d, "c.3mf")] + args[5:] + ["--units", "cm"])
+        assert b'unit="centimeter"' in zipfile.ZipFile(os.path.join(d, "c.3mf")).read("3D/3dmodel.model")
+        # blocky export, with the print steps
+        main(args[:4] + [os.path.join(d, "v.stl")] + args[5:] + ["--voxel", "--fill-bubbles", "--connect-parts"])
+        n, bad = check_watertight(os.path.join(d, "v.stl"))
+        assert n and bad == 0, "blocky mesh is not watertight"
+        # --sub-level all: quarter-turn snapping picks the closest proper rotation
+        from modded2model.sublevels import nearest_quarter_turn, quat_matrix
+        import math
+        r = quat_matrix({"w": math.cos(math.radians(50)), "y": math.sin(math.radians(50))})  # 100 degrees about y
+        q = nearest_quarter_turn(r)
+        assert (q == np.rint(quat_matrix({"w": math.cos(math.radians(45)), "y": math.sin(math.radians(45))}))).all()
+        # a subset of a structure keeps what loaders and earlier steps put on it
+        from modded2model.schematic import BlockState, Structure, with_blocks
+        st = Structure((2, 1, 1), [(0, 0, 0, BlockState("a:b")), (1, 0, 0, BlockState("a:c"))], {(1, 0, 0): {"k": 1}})
+        st.grid_shift = (1, 2, 3)
+        sub = with_blocks(st, st.blocks[:1])
+        assert sub.grid_shift == (1, 2, 3) and not sub.block_data and len(st.blocks) == 2
         print("OK")

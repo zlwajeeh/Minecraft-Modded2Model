@@ -20,6 +20,7 @@ from .__main__ import main as cli_main
 SETTINGS = os.path.join(os.path.expanduser("~"), ".modded2model.json")
 DEFAULT_INSTANCE = os.path.join(os.environ.get("APPDATA", ""), "PrismLauncher", "instances", "AeronauticsModpack")
 MAIN_PART = "Main build (with merged sub-levels)"
+ALL_PARTS = "Everything: main build and every sub-level, where they were saved"
 
 
 # moving contraptions: what the window shows -> the --contraptions value
@@ -803,6 +804,8 @@ class App(tk.Tk):
                                   f"{sl.size[0]}x{sl.size[1]}x{sl.size[2]}, {len(sl.blocks)} blocks ({note})")
             except Exception:
                 pass
+        if len(values) > 1 and getattr(self, "offer_all_parts", False):  # the classic window's choice
+            values.insert(1, ALL_PARTS)
         self.part_box["values"] = values
         self.part_var.set(MAIN_PART)
         self.refresh_preview()
@@ -876,6 +879,9 @@ class App(tk.Tk):
                 n = self.part_var.get().split()[1].rstrip(":")
                 args += ["--sub-level", n]
                 name += f"_sub{n}"
+            elif self.part_var.get() == ALL_PARTS:
+                args += ["--sub-level", "all"]
+                name += "_all"
         elif tab == 1:
             try:
                 c1 = [str(int(v.get())) for v in self.corners[0]]
@@ -960,6 +966,12 @@ class App(tk.Tk):
                 args.append("--fatten")
             if self.voxel_var.get():
                 args.append("--voxel")
+            snap = getattr(self, "snap_var", None)  # classic window only
+            if snap is not None and snap.get():
+                args.append("--snap-wheels")
+                full = getattr(self, "snap_full_var", None)
+                if full is not None and full.get():
+                    args.append("--snap-full-size")
 
         flags = {"merge": self.merge_var, "glass_cull": self.glass_var, 
                  "remove_backups": self.backup_var, "replace_vs": self.vs_var, "z_up": self.zup_var,
@@ -968,6 +980,9 @@ class App(tk.Tk):
                  "delete_floating": self.float_var, "hollow_bottom": self.hollowb_var,
                  "superhollow": self.super_var, "melt_snow": self.melt_var, "export_lesser": self.lesser_var,
                  "fatten": self.fatten_var, "voxel": self.voxel_var}
+        if getattr(self, "snap_var", None) is not None:
+            flags["snap_wheels"] = self.snap_var
+            flags["snap_full_size"] = self.snap_full_var
         self.settings.update(o, out_dir=os.path.dirname(out), format=ext, missing=self.missing_var.get(),
                              units=self.units_var.get(), size_mode=self.size_var.get(),
                              interior=self.interior_var.get(),

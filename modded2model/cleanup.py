@@ -5,7 +5,7 @@
 - Blocks the export can't draw (no blockstate, or drawn only by code) are kept as full cubes
   or left out.
 """
-from .schematic import BlockState, Structure
+from .schematic import BlockState, Structure, with_blocks
 
 BACKUP_BLOCKS = ("drivebywire:backup_block",)
 COLORS = ("white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray",
@@ -117,7 +117,4 @@ def clean(structure, vox, remove_backups=True, replace_vs=True, missing="cube", 
             blocks = [(x, y, z, solid if (x, y, z) in inner else st) for x, y, z, st in blocks]
             notes.append(f"Made the interior solid: replaced {len(inner)} non-solid block(s) inside the hull "
                          f"with solid blocks")
-    keep = {(x, y, z) for x, y, z, _ in blocks}
-    out = Structure(structure.size, blocks, {k: v for k, v in structure.block_data.items() if k in keep},
-                    structure.sub_levels, structure.merged, structure.skipped)
-    return out, notes
+    return with_blocks(structure, blocks), notes
