@@ -267,6 +267,6 @@ Haines' open-source Mineways.
 MIT, see [LICENSE](LICENSE). Copyright (c) 2026 Zach Mitchell (ZNO Productions).
 
 The 3D-print block operations (`modded2model/printsteps.py`) are ported from Eric Haines' open-source
-[Mineways](https://github.com/erich666/Mineways); its BSD-style licence notice is included in [LICENSE](LICENSE).
+[Mineways](https://github.com/erich666/Mineways); its BSD-style licence notice is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 Minecraft and mod models and textures are not part of this project: the tool reads them from your own
 game files when it runs.
