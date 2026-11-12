@@ -10,10 +10,15 @@ from modded2model import __version__  # noqa: E402
 
 HERE = os.path.join(ROOT, "packaging")
 name = f"Minecraft-Modded2Model-v{__version__}"
+AUTHOR = "Zach Mitchell"  # Properties > Details: Copyright
+COMPANY = "ZNO Productions"  # Properties > Details: Company
+YEAR = __import__("datetime").date.today().year
 nums = tuple(int(x) for x in (__version__.split(".") + ["0"] * 4)[:4])
 info = f"""VSVersionInfo(
   ffi=FixedFileInfo(filevers={nums}, prodvers={nums}),
   kids=[StringFileInfo([StringTable('040904B0', [
+    StringStruct('CompanyName', '{COMPANY}'),
+    StringStruct('LegalCopyright', '© {YEAR} {AUTHOR}'),
     StringStruct('ProductName', 'Minecraft-Modded2Model'),
     StringStruct('FileDescription', 'Minecraft-Modded2Model v{__version__}'),
     StringStruct('ProductVersion', '{__version__}'),
